@@ -1,0 +1,109 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Streamlit App",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/.venv/Scripts/streamlit.exe",
+            "args": [
+                "run",
+                "${workspaceFolder}/streamlit_scoring.py",
+                "--server.port=8501",
+                "--server.headless=true"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": false,
+            "autoReload": {
+                "enable": true
+            }
+        },
+        {
+            "name": "Debug Streamlit (Custom Port)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/.venv/Scripts/streamlit.exe",
+            "args": [
+                "run",
+                "${workspaceFolder}/streamlit_scoring.py",
+                "--server.port=8502",
+                "--server.headless=true",
+                "--server.runOnSave=true"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "STREAMLIT_SERVER_HEADLESS": "true"
+            },
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": false
+        },
+        {
+            "name": "Debug Streamlit (Development Mode)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/.venv/Scripts/streamlit.exe",
+            "args": [
+                "run",
+                "${workspaceFolder}/streamlit_scoring.py",
+                "--server.port=8503",
+                "--server.headless=false",
+                "--server.runOnSave=true",
+                "--logger.level=debug",
+                "--server.enableCORS=false"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "STREAMLIT_SERVER_HEADLESS": "false",
+                "STREAMLIT_LOGGER_LEVEL": "debug"
+            },
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": false,
+            "preLaunchTask": "Check Streamlit Dependencies"
+        },
+        {
+            "name": "Debug Python Module",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Debug Gradio Interface",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/simple_gradio_interface.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Debug Enhanced Visualization Generator",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/enhanced_visualization_generator.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

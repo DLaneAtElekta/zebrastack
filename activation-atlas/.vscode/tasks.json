@@ -1,0 +1,101 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Check Streamlit Dependencies",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "args": [
+                "-c",
+                "import streamlit; import pandas; import PIL; print('All Streamlit dependencies available')"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Install Streamlit",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/Scripts/pip.exe",
+            "args": [
+                "install",
+                "streamlit",
+                "pandas",
+                "pillow"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Streamlit (Terminal)",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/Scripts/streamlit.exe",
+            "args": [
+                "run",
+                "${workspaceFolder}/streamlit_scoring.py",
+                "--server.port=8501"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "new"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Stop All Streamlit Processes",
+            "type": "shell",
+            "command": "taskkill",
+            "args": [
+                "/F",
+                "/IM",
+                "streamlit.exe"
+            ],
+            "windows": {
+                "command": "taskkill",
+                "args": [
+                    "/F",
+                    "/IM",
+                    "streamlit.exe"
+                ]
+            },
+            "linux": {
+                "command": "pkill",
+                "args": [
+                    "-f",
+                    "streamlit"
+                ]
+            },
+            "osx": {
+                "command": "pkill",
+                "args": [
+                    "-f",
+                    "streamlit"
+                ]
+            },
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        }
+    ]
+}

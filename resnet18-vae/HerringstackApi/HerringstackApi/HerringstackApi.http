@@ -1,0 +1,14 @@
+@HerringstackApi_HostAddress = http://localhost:5144
+
+GET {{HerringstackApi_HostAddress}}/api/Subjects/119/images
+Accept: application/json
+
+###
+
+GET {{HerringstackApi_HostAddress}}/api/Subjects/119/images/00000119_001/pixels?format=png&processed=none
+Accept: image/png
+
+###
+
+GET {{HerringstackApi_HostAddress}}/api/Subjects/119/images/00000119_001/boundingboxes
+Accept: application/json

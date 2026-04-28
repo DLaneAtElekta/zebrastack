@@ -1,0 +1,40 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 16
+VisualStudioVersion = 16.0.31313.79
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "FashionMnistVaeTfNet", "FashionMnistVaeTfNet\FashionMnistVaeTfNet.csproj", "{4B00BFAE-B718-4B33-B856-EC62E1EC003A}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{B6FFC29A-9A1D-4A2B-A1DD-6333032884A8}"
+	ProjectSection(SolutionItems) = preProject
+		.gitignore = .gitignore
+	EndProjectSection
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "python", "python", "{BA870636-4421-491C-8F3D-50B8AE9ABDE1}"
+	ProjectSection(SolutionItems) = preProject
+		anisotropic_diffusion.py = anisotropic_diffusion.py
+		fashionmnist_train.ipynb = fashionmnist_train.ipynb
+		figure_callback.py = figure_callback.py
+		oriented_powermap_2d.py = oriented_powermap_2d.py
+		tensor_utils.py = tensor_utils.py
+		zebrastack_model_v2.py = zebrastack_model_v2.py
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{4B00BFAE-B718-4B33-B856-EC62E1EC003A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4B00BFAE-B718-4B33-B856-EC62E1EC003A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4B00BFAE-B718-4B33-B856-EC62E1EC003A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4B00BFAE-B718-4B33-B856-EC62E1EC003A}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {A225A817-3A07-48A2-AAA0-9500A1A3CFBE}
+	EndGlobalSection
+EndGlobal
