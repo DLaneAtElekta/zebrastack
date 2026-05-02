@@ -90,6 +90,10 @@ def main() -> int:
                         help="Use multi-scale skip connections to the classifier.")
     parser.add_argument("--use-attention", action="store_true",
                         help="Use SE channel attention on the 1x1 reduce in each IT stage.")
+    parser.add_argument("--use-v2-mix", action="store_true",
+                        help="Enable V2 1x1 cross-channel mixing of V1 power maps.")
+    parser.add_argument("--use-v4-mix", action="store_true",
+                        help="Enable V4 1x1 cross-channel mixing on V4 backbone output.")
     args = parser.parse_args()
     matplotlib.use("Agg")
 
@@ -134,6 +138,8 @@ def main() -> int:
         use_v2_gabor=True,
         v2_gabor_frequencies=(0.06, 0.03),
         v2_gabor_kernel_size=17,
+        use_v2_mixing=args.use_v2_mix,
+        trainable_v2_mix=True,
     )
     model = FullVentralStream(
         v4_backbone=v4,
@@ -148,6 +154,7 @@ def main() -> int:
         downsample=2,
         use_skip=args.use_skip,
         use_attention=args.use_attention,
+        use_v4_mix=args.use_v4_mix,
     ).to(device)
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Trainable parameters: {n_trainable}")
@@ -203,6 +210,8 @@ def main() -> int:
     extras = []
     if args.use_skip:     extras.append("skip")
     if args.use_attention: extras.append("attn")
+    if args.use_v2_mix:   extras.append("V2mix")
+    if args.use_v4_mix:   extras.append("V4mix")
     extras_str = (" + " + " + ".join(extras)) if extras else ""
     ax.set_title(f"FullVentralStream{extras_str} on Fashion-MNIST ({args.size}px)\n"
                  f"test acc = {test_acc:.3f}, params = {n_trainable}")

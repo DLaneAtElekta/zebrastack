@@ -191,10 +191,17 @@ class FullVentralStream(nn.Module):
         downsample: int = 2,
         use_skip: bool = False,
         use_attention: bool = False,
+        use_v4_mix: bool = False,
     ):
         super().__init__()
         self.backbone = V4Backbone(v4_backbone)
         self.use_skip = use_skip
+
+        from .v4_recursive_filters import V2Mix as ChannelMix
+        if use_v4_mix:
+            self.v4_mix = ChannelMix(self.backbone.n_outputs, trainable=True)
+        else:
+            self.v4_mix = None
 
         orientations = standard_orientations(n_orientations)
         self.pit = ITStage(
@@ -248,6 +255,8 @@ class FullVentralStream(nn.Module):
     def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         v4 = self.backbone(x)
         v4_norm = self.input_norm(v4)
+        if self.v4_mix is not None:
+            v4_norm = self.v4_mix(v4_norm)
         pit = self.pit(v4_norm)
         cit = self.cit(pit)
         ait = self.ait(cit)
