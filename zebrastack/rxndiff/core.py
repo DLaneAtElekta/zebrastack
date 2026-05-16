@@ -64,6 +64,12 @@ class RDStage:
         return self.V
 
 
+def _cfl_dt(dt, dx, max_diffusion, safety=0.24):
+    """Cap dt at the explicit-Euler CFL limit ``safety * dx**2 / max_D``."""
+    max_D = max(max_diffusion, 1e-12)
+    return min(dt, safety * dx * dx / max_D)
+
+
 class GrayScottStage(RDStage):
     """Gray-Scott model.
 
@@ -74,30 +80,45 @@ class GrayScottStage(RDStage):
     stage, normalized to [0, 1]) the effective feed rate becomes
     ``F + F_alpha * feed_map``, so a high product upstream drives more
     substrate replenishment downstream.
+
+    The ``scale`` parameter modulates spatial scale: pattern wavelength
+    scales with ``scale`` (because λ ∝ √D), so ``scale=2`` produces
+    roughly twice-as-large spots/stripes. Internally this multiplies
+    ``Du`` and ``Dv`` by ``scale**2`` and caps ``dt`` to satisfy the
+    diffusion CFL limit. Larger scales therefore need proportionally
+    more steps (or substeps) to reach the same pattern maturity.
     """
 
     param_keys = ("F", "k", "Du", "Dv", "F_alpha")
 
     def __init__(self, size=96, F=0.0367, k=0.0649, Du=0.16, Dv=0.08,
-                 F_alpha=0.04, dx=1.0, dt=1.0, seed=None):
+                 F_alpha=0.04, dx=1.0, dt=1.0, scale=1.0, seed=None):
         self.F = F
         self.k = k
-        self.Du = Du
-        self.Dv = Dv
+        self.scale = float(scale)
+        self.Du = Du * self.scale * self.scale
+        self.Dv = Dv * self.scale * self.scale
         self.F_alpha = F_alpha
+        dt = _cfl_dt(dt, dx, max(self.Du, self.Dv))
         super().__init__(size=size, dx=dx, dt=dt, seed=seed)
 
     def reset(self, seed=None):
         rng = np.random.default_rng(seed)
         self.U[:] = 1.0
         self.V[:] = 0.0
-        n_blobs = int(rng.integers(8, 24))
+        # Seed blob half-width scales with spatial scale so seeds are large
+        # enough to nucleate a pattern at higher scales (a blob much smaller
+        # than the pattern wavelength simply decays away).
+        half = max(3, int(round(3 * self.scale)))
+        margin = half + 1
+        # density of blobs roughly constant in physical area (i.e. count
+        # drops with scale^2)
+        n_blobs = max(4, int(rng.integers(8, 24) / max(self.scale, 1.0) ** 2))
         for _ in range(n_blobs):
-            r0 = int(rng.integers(4, self.size - 4))
-            c0 = int(rng.integers(4, self.size - 4))
-            self.U[r0 - 3:r0 + 3, c0 - 3:c0 + 3] = 0.5
-            self.V[r0 - 3:r0 + 3, c0 - 3:c0 + 3] = 0.25
-        # tiny perturbation everywhere
+            r0 = int(rng.integers(margin, self.size - margin))
+            c0 = int(rng.integers(margin, self.size - margin))
+            self.U[r0 - half:r0 + half, c0 - half:c0 + half] = 0.5
+            self.V[r0 - half:r0 + half, c0 - half:c0 + half] = 0.25
         self.U += 0.01 * rng.standard_normal(self.U.shape)
         self.V += 0.01 * rng.standard_normal(self.V.shape)
 
@@ -122,17 +143,21 @@ class FitzHughNagumoStage(RDStage):
     param_keys = ("a", "b", "tau", "k", "k_alpha")
 
     def __init__(self, size=96, a=1.54e-4, b=4.7e-3, tau=1.946, k=-2.85e-3,
-                 k_alpha=5e-3, dx=2.0 / 96, dt=1e-3, seed=None):
+                 k_alpha=5e-3, dx=2.0 / 96, dt=1e-3, scale=1.0, seed=None):
         # Defaults are the pre-scaled values from examples/rxndiff.ipynb,
         # which give well-formed labyrinth patterns under explicit Euler.
-        self.a = a
-        self.b = b
+        # ``scale`` modulates the spatial scale of the patterns: a and b
+        # are multiplied by scale**2, so labyrinth stripe spacing grows
+        # roughly linearly with ``scale``.
+        self.scale = float(scale)
+        self.a = a * self.scale * self.scale
+        self.b = b * self.scale * self.scale
         self.tau = tau
         self.k = k
         self.k_alpha = k_alpha
-        # diffusion coefficients used by the base step()
-        self.Du = a
-        self.Dv = b / tau
+        self.Du = self.a
+        self.Dv = self.b / max(self.tau, 1e-8)
+        dt = _cfl_dt(dt, dx, max(self.Du, self.Dv))
         super().__init__(size=size, dx=dx, dt=dt, seed=seed)
 
     def _refresh_diffusion(self):
