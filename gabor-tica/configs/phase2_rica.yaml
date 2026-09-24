@@ -1,0 +1,40 @@
+# Phase 2, overcomplete variant: topographic RICA. Run: python experiments/phase2_v2.py --config configs/phase2_rica.yaml
+seed: 0
+image_size: 64
+
+v1:                         # same V1 as Phase 1, decimated 2x (plan block step [5])
+  kind: v1_gabor
+  decimate: 2
+
+v2:
+  sheet: 12                 # 12x12 torus = 144 units (2.25x overcomplete)
+  radius: 1                 # 3x3 pooling neighborhood
+  tica_mode: rica
+  rica_lam: 1.0             # reconstruction weight; 0.2 gives near-duplicate units
+  dim: 64                   # PCA dims kept before TICA
+  n_iter: 1500
+  design_A:
+    patch: 8                # 8x8 V1-map cells = 16x16 image px
+  design_B:
+    second_order:
+      freqs: [0.0625, 0.03125]   # cycles / image px
+      n_orientations: 4
+      path_ratio: 0.5            # keep paths with f2 <= 0.5 * f1
+
+train:
+  n_patches: 256
+
+probes:
+  per_class: 80
+  texture_freq: 0.15
+  texture_bandwidth: 0.35
+  cm_envelope_freq: 0.0625
+  cm_carrier_freq: 0.25
+  boundary_images: 160
+  window: 4                 # central window (V2 cells) for image-level features
+
+checks:
+  margin: 0.02              # B may trail A by at most this and still "match"
+  topography_ratio: 2.0     # neighbor energy corr / far energy corr
+
+output_dir: runs/phase2_rica

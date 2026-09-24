@@ -16,6 +16,7 @@ pip install -e ".[dev]"            # add ",scattering" for Kymatio (Phase 2)
 pytest                             # probe + pipeline tests
 python experiments/phase0_smoke.py # renders figures into runs/phase0/
 python experiments/phase1_v1.py    # V1 exit checks -> runs/phase1/report.json
+python experiments/phase2_v2.py    # V2 A-vs-B + TICA (~2 min); --config configs/phase2_rica.yaml for RICA
 ```
 
 ## Layout
@@ -42,8 +43,8 @@ gabor-tica/
 |---|---|---|
 | 0 | Infrastructure and probes | ✅ probes, identity stage, viz, smoke test |
 | 1 | Developmental V1 (quadrature Gabor, energy, divisive norm, log) | ✅ fixed bank; exit checks pass (developmental variant deferred) |
-| 2 | V2 block, Design A vs. B, TICA | next |
-| 3 | Generative path, wake–sleep (or FE-1, Section 7) | — |
+| 2 | V2 block, Design A vs. B, TICA | ✅ B ≥ A on all probes; complete TICA and overcomplete RICA |
+| 3 | Generative path, wake–sleep (or FE-1, Section 7) | next |
 | 4 | Temporal coherence | — |
 | 5 | V4 → PIT → AIT | — |
 | 6 | Thalamic gain (attention field) | — |
@@ -73,6 +74,50 @@ Notes for later phases:
   lower `bandwidth_octaves` for broader tuning.
 - `log_eps` sets the log floor; 1e-3 visibly piles ~1.6% of responses at the floor, 1e-4 ~0.2%.
 - Deferred: the optional developmental variant (learning Gabors from retinal-wave noise).
+
+## Phase 2 results (`configs/phase2.yaml`, `configs/phase2_rica.yaml`)
+
+`V2Stage` (`kind: v2_tica`) on the Phase 1 V1 decimated 2×, fitted on photo patches.
+- **Design B:** second-order quadrature Gabors (0.0625, 0.03125 cyc/px × 4
+  orientations) on each V1 channel, frequency-decreasing paths only (160
+  channels), plus 24 pooled first-order channels, then a 1×1 TICA.
+- **Design A:** TICA learned on 8×8×24 neighborhoods of the V1 maps (a strided conv).
+
+Both reduce to 64 PCA dims, then TICA on an 8×8 torus (complete) or 144 units on
+a 12×12 torus (RICA, 2.25× overcomplete). Readout = linear classifier on TICA's
+signed coefficients plus sheet-pooled energy, held out, averaged over 3 splits.
+
+| Probe | V1 only | A (complete) | B (complete) | A (RICA) | B (RICA) |
+|---|---|---|---|---|---|
+| First-order texture (8 orientations) | 1.00 | 1.00 | 0.99 | 1.00 | 0.98 |
+| **Second-order texture** (4 envelope orientations) | 0.51 | 0.79 | **1.00** | 0.85 | **1.00** |
+| Junctions (line / L / T / X) | 1.00 | 0.99 | 1.00 | 0.98 | 1.00 |
+| Texture-boundary AUC | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+| Energy corr. near / far on sheet | — | 4.5× | 5.2× | 9.6× | 155× |
+| Unit sparsity (excess kurtosis) | — | 1.45 | 0.11 | 1.29 | 0.14 |
+
+Findings and caveats:
+- The one probe that separates the designs is second-order texture: V1 is at
+  chance, A (linear over V1 maps) partly recovers it through rectification,
+  B's filter-rectify-filter path solves it.
+- First-order texture, junctions and boundaries are at ceiling even for V1
+  alone, so they don't yet discriminate A from B. Harder variants (lower
+  contrast, added noise, finer class spacing) are needed before Phase 5 leans on them.
+- Readout matters: rectified-only `|s|` hid first-order information carried by
+  the sign (B dropped to 0.91 on texture); signed-only `s` hid A's second-order
+  information (0.56). Both TICA outputs are used.
+- B's TICA units are nearly Gaussian (kurtosis ≈ 0.1), because the log at the
+  end of each stage Gaussianizes its input. TICA still finds the variance
+  dependencies (strong topography), but there is little sparse structure left
+  for it. Worth trying TICA before the log (on normalized energy) in Phase 3.
+- The orientation-preference sheet maps use pooled energy, which averages over
+  sheet neighbors, so their smoothness is partly built in. The near/far
+  energy-correlation ratio on raw coefficients is the unbiased topography measure.
+- TICA implementation notes: complete TICA uses Riemannian gradient descent on
+  the orthogonal group (Adam stalls against the re-orthonormalization); sheet
+  layout is refined by greedy unit swaps that lower the TICA loss (gradients
+  alone leave patchy maps); RICA normalizes rows inside the objective
+  (otherwise every unit collapses to zero).
 
 ## Related code elsewhere in this repo
 
