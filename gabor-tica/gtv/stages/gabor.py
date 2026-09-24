@@ -83,8 +83,9 @@ class GaborBank(nn.Module):
         f, t = torch.meshgrid(freqs, thetas, indexing="ij")
         sig = torch.tensor([sigma_from_bandwidth(float(x), bandwidth_octaves) for x in f.flatten()])
         # fixed developmental prior for now; Phase 3 may make these tethered Parameters
-        self.register_buffer("freq", f.flatten())
-        self.register_buffer("theta", t.flatten())
+        # clone: meshgrid outputs share memory, which load_state_dict refuses to write into
+        self.register_buffer("freq", f.flatten().clone())
+        self.register_buffer("theta", t.flatten().clone())
         self.register_buffer("sigma_u", sig)
         self._cache: dict[tuple[int, int], torch.Tensor] = {}
 

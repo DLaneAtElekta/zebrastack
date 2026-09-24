@@ -75,3 +75,40 @@ def sheet_map(
     ax.axis("off")
     fig.tight_layout()
     return fig
+
+
+def orientation_energy_image(v1_map: torch.Tensor, n_orientations: int, n_scales: int, scale: int | None = None):
+    """RGB rendering of one V1 log-energy map (C, H, W), C = scales x orientations.
+
+    Hue = dominant orientation (doubled-angle vector average of energies),
+    saturation = orientation selectivity, value = total energy. ``scale`` picks
+    one scale; None sums energies over scales.
+    """
+    import numpy as np
+    from matplotlib.colors import hsv_to_rgb
+
+    e = v1_map.detach().cpu().double().exp().view(n_scales, n_orientations, *v1_map.shape[-2:])
+    e = e[scale] if scale is not None else e.sum(0)
+    ang = torch.arange(n_orientations, dtype=torch.float64) * 2 * math.pi / n_orientations
+    vec = (e * torch.exp(1j * ang).view(-1, 1, 1)).sum(0)
+    total = e.sum(0)
+    hue = torch.remainder(torch.angle(vec), 2 * math.pi) / (2 * math.pi)
+    sat = (vec.abs() / total.clamp(min=1e-12)).clamp(0, 1)
+    lv = total.log()
+    val = ((lv - lv.min()) / (lv.max() - lv.min() + 1e-12)).clamp(0, 1)
+    return hsv_to_rgb(np.stack([hue.numpy(), sat.numpy(), val.numpy()], -1))
+
+
+def orientation_grid(rows: dict[str, torch.Tensor], n_orientations: int, n_scales: int, ncols: int = 6,
+                     scale: int | None = None) -> Figure:
+    """One row of orientation-energy renderings per named batch of V1 maps."""
+    fig, axes = plt.subplots(len(rows), ncols, figsize=(1.5 * ncols, 1.6 * len(rows)), squeeze=False)
+    for r, (name, maps) in enumerate(rows.items()):
+        for c in range(ncols):
+            ax = axes[r, c]
+            ax.axis("off")
+            if c < len(maps):
+                ax.imshow(orientation_energy_image(maps[c], n_orientations, n_scales, scale), interpolation="nearest")
+        axes[r, 0].set_title(name, fontsize=8, loc="left")
+    fig.tight_layout()
+    return fig

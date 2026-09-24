@@ -59,7 +59,19 @@ def symmetric_orthonormalize(w: torch.Tensor) -> torch.Tensor:
     return u @ vh
 
 
-class Whitener(nn.Module):
+class FittedModule(nn.Module):
+    """Module whose buffers are sized by ``fit``; loading a checkpoint into a
+    fresh (unfitted) instance resizes them to the saved shapes."""
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        for name, buf in self._buffers.items():
+            key = prefix + name
+            if buf is not None and key in state_dict and buf.shape != state_dict[key].shape:
+                self._buffers[name] = torch.empty_like(state_dict[key])
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
+
+class Whitener(FittedModule):
     """Standardize each input dim, then PCA-whiten to ``dim`` components.
 
     ``transform`` maps (N, D) -> (N, dim); ``matrix``/``offset`` expose the same
@@ -249,7 +261,7 @@ def arrange_on_sheet(s: torch.Tensor, h: torch.Tensor, max_sweeps: int = 20) -> 
     return perm
 
 
-class TICA(nn.Module):
+class TICA(FittedModule):
     """Fitted whitening + TICA/RICA weights on a ``rows`` x ``cols`` sheet."""
 
     def __init__(

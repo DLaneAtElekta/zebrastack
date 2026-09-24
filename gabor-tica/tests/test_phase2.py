@@ -159,3 +159,16 @@ def test_v2_group_whitening_forward_matches(fitted):
     b.fit(maps, n_iter=30, polish_iter=5)
     s, f = b(maps), b.features(maps)
     assert torch.allclose(s[1, :, 3, 3], b.tica(f[1, :, 3, 3][None])[0], atol=1e-3)
+
+
+def test_fitted_v2_stage_round_trips_through_state_dict(fitted, tmp_path):
+    maps, a, b = fitted
+    torch.save({"A": a.state_dict(), "B": b.state_dict()}, tmp_path / "v2.pt")
+    ck = torch.load(tmp_path / "v2.pt")
+    a2 = V2Stage(design="A", patch=4, sheet=4, dim=16)
+    b2 = V2Stage(design="B", v1_freqs=b.front.banks[0].freq.new_tensor([0.25] * 4 + [0.125] * 4).tolist(),
+                 second_order={"freqs": [0.0625]}, sheet=4, dim=16)
+    a2.load_state_dict(ck["A"])
+    b2.load_state_dict(ck["B"])
+    assert torch.allclose(a2(maps), a(maps), atol=1e-5)
+    assert torch.allclose(b2(maps), b(maps), atol=1e-5)

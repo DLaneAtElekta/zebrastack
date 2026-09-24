@@ -17,7 +17,8 @@ pytest                             # probe + pipeline tests
 python experiments/phase0_smoke.py # renders figures into runs/phase0/
 python experiments/phase1_v1.py    # V1 exit checks -> runs/phase1/report.json
 python experiments/phase2_v2.py    # V2 A-vs-B + TICA (~2 min); --config configs/phase2_rica.yaml for RICA
-python experiments/phase2_envelope_sweep.py  # second-order probe across envelope frequencies (~4 min)
+python experiments/phase2_envelope_sweep.py  # second-order probe across envelope frequencies (~5 min)
+python experiments/phase3_generative.py      # generative path + wake-sleep (~6 min)
 ```
 
 ## Layout
@@ -31,7 +32,7 @@ gabor-tica/
     stages/            stage blocks (gabor, normalize, tica, block)
     viz/               filter atlas, topographic sheet map, fantasy grid
     data/              natural images, video, category sets        (Phase 1+)
-    generative/        top-down decoders, wake–sleep               (Phase 3)
+    generative/        decoder, latent priors, wake–sleep, fantasy diagnostics (Phase 3)
     temporal/          temporal coherence / slowness               (Phase 4)
     thalamus/          gain, expectation, routing                  (Phases 6–8)
   experiments/         one runnable script per phase check
@@ -45,7 +46,7 @@ gabor-tica/
 | 0 | Infrastructure and probes | ✅ probes, identity stage, viz, smoke test |
 | 1 | Developmental V1 (quadrature Gabor, energy, divisive norm, log) | ✅ fixed bank; exit checks pass (developmental variant deferred) |
 | 2 | V2 block, Design A vs. B, TICA | ✅ B ≥ A on all probes; complete TICA and overcomplete RICA |
-| 3 | Generative path, wake–sleep (or FE-1, Section 7) | next |
+| 3 | Generative path, wake–sleep (or FE-1, Section 7) | ⚠️ 3a ✅; 3b stable but misses the R²-drop check by 0.002; 3c no gain |
 | 4 | Temporal coherence | — |
 | 5 | V4 → PIT → AIT | — |
 | 6 | Thalamic gain (attention field) | — |
@@ -167,6 +168,78 @@ What it shows:
   with 768 training images B reaches 0.94 / 0.97 at 0.125 / 0.177 against A's
   0.99 / 1.00. A keeps a small edge on this first-order leakage, which its
   learned 8×8 spatial filters over V1 maps can pick up directly.
+
+## Phase 3 results (`configs/phase3.yaml`)
+
+Generative path from Design B's 64 V2 latents (16×16 map) down to V1 log-power
+maps (24 channels, 32×32); no pixels. Trained on patches from 6 repo photos,
+evaluated on 2 held-out photos.
+
+- **Decoder:** convolutional factor analysis, bilinear 2× upsampling then a
+  3×3 conv, per-channel Gaussian noise with spatially correlated sampling
+  fitted to the real residuals.
+- **Recognition:** the fixed Design B front end plus the Phase 2
+  whitening + TICA as a learnable affine map, with a Gaussian q.
+- **Plausibility measure:** mean effect size of 7 groups of V1-map summary
+  statistics (per-channel mean, spread, skew, lag-1/lag-4 spatial
+  autocorrelation, orientation and scale correlations) against held-out real
+  maps. Real-vs-real across photos sets the floor. (A real-vs-fantasy
+  classifier saturated at 1.0 for everything, including near-perfect
+  reconstructions, so it could not rank models.)
+
+| | Held-out R² | Statistic gap (0 = matched) |
+|---|---|---|
+| Real vs real (floor) | — | 0.12 |
+| 3a reconstruction + noise | 0.948 | 0.29 |
+| 3a fantasy, iid prior (standard FA) | — | 1.01 |
+| 3a fantasy, per-unit spatial prior | — | 0.85 |
+| 3a fantasy, global + local stationary prior | — | **0.34** |
+| 3b after wake–sleep, global + local prior | 0.916 | 0.37 |
+| 3c dependent-variance prior | — | 0.39 |
+| White noise (ceiling) | — | 3.67 |
+
+Checks: all pass except `stable_reconstruction`. Wake–sleep lowers held-out R²
+by 0.032 against a 0.03 limit set before the run.
+
+Findings:
+- **The prior matters most, and needs two levels.** Recognized V2 latents are
+  smooth (lag-1 corr 0.84, overlapping receptive fields), correlated across
+  units at nonzero lags, and about a quarter of their variance is a per-patch
+  constant (overall contrast and texture of the patch). The prior that works is
+  z = a + r: a Gaussian per-patch offset vector plus a stationary local field
+  with the full lagged cross-unit covariance, estimated from the map interior
+  with a flat-top taper and sampled on a larger torus, then cropped. The
+  standard iid FA prior is 3× worse. Fitting the prior to recognized latents is
+  the prior's own wake-phase (maximum-likelihood) update.
+- **Wake–sleep is stable only with care, and never beat 3a.** The first
+  version diverged: R² fell to 0.24 as sleep rewrote the recognition, and
+  prior refits jolted the fantasies. Stabilizers that work: a fixed prior, q's
+  noise initialized from its measured error on fantasies, a low sleep rate
+  (3e-4), and a tether toward the TICA start (recognition "on rails"). With
+  them, recognition stays close to TICA (median latent corr 0.97), and the
+  sheet's topography gets sharper (near/far energy ratio 13.8 → 31). But R²
+  drops 0.03 and fantasies get slightly worse. The wake phase trains the
+  decoder on noisy q samples, and recognition, an affine map on fixed
+  nonlinear features, is trained on fantasies whose features are measurably
+  off-distribution: wake–sleep's sleep-phase bias. At sleep rate 3e-3,
+  recognition drifts to a different but equally decodable code (corr 0.43),
+  losing the TICA organization. Next options per the plan: reweighted
+  wake–sleep, or the Section 7 free-energy track (FE-1).
+- **Dependent variances (3c) add nothing measurable here.** Per-patch gain
+  spread is small (τ ≈ 0.16) and fantasies do not improve. This is expected:
+  the log at the end of each stage Gaussianizes the latents (Phase 2 open
+  issue). A variance model is more likely to matter if TICA moves before the log.
+- **Generative fields** (`projective_fields.png`): some V2 units drive all
+  orientations together (contrast gain), some trade fine against coarse
+  scales, some are orientation-specific. Sheet neighbors generate somewhat
+  more similar V1 patterns than distant units (|corr| 0.23 vs 0.16).
+- The decoder's stride-2 transposed convolution left period-2 checkerboard
+  residuals; bilinear upsampling plus a conv removed them. Fitted stages,
+  priors and decoders now round-trip through `state_dict` (fitted buffers
+  resize on load).
+- Not done: the Gabor tether (V1 filters drifting "on rails"). V1 is fixed,
+  since a V1-power-map generative model gives no signal for moving the V1
+  filters themselves; that needs a pixel-level term.
 
 ## Related code elsewhere in this repo
 

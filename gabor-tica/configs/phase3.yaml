@@ -1,0 +1,37 @@
+# Phase 3: generative path (V2 latents -> V1 log-power maps) and wake-sleep.
+# Run: python experiments/phase3_generative.py
+base_config: configs/phase2.yaml   # V1 and Design B V2 settings
+
+data:
+  train_photos: 6          # first N repo photos for training, the rest held out
+  n_train: 512
+  n_test: 128
+  n_v2_fit: 256            # patches used to fit the Phase 2 TICA
+
+decoder:
+  kernel: 3                # odd; bilinear 2x upsample + conv
+  lr: 0.02
+  n_iter: 400
+
+prior:
+  max_lag: 8               # lagged cross-covariance range (V2 cells)
+
+wake_sleep:
+  n_iter: 250
+  batch: 32
+  lr_wake: 0.01
+  lr_sleep: 0.0003         # 3e-3 drifts away from TICA and destabilizes (see README)
+  refit_prior_every: null  # null = prior fitted once from the starting latents (refitting in jumps destabilizes)
+  tether: 1.0              # pull recognition toward its TICA start (keeps the topographic sheet)
+  init_noise_from_sleep: true
+
+n_fantasies: 128
+
+checks:
+  min_test_r2: 0.8
+  max_r2_drop: 0.03              # wake-sleep may not degrade reconstruction by more than this
+  min_init_corr: 0.5             # recognized latents keep this median corr with the TICA start
+  min_topography_kept: 0.5       # sheet near/far energy-corr ratio keeps this fraction of its start
+  fantasy_vs_recon_ratio: 1.5    # fantasy gap <= this x (reconstruction + noise) gap
+
+output_dir: runs/phase3
