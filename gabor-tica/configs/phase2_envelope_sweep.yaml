@@ -1,0 +1,14 @@
+# Phase 2 follow-up: is Design B's second-order advantage architectural, or
+# an artifact of its fixed second-order scale matching the probe?
+# Run: python experiments/phase2_envelope_sweep.py
+base_config: configs/phase2.yaml
+
+envelope_freqs: [0.0156, 0.022, 0.03125, 0.044, 0.0625, 0.088, 0.125, 0.177]  # cycles / image px
+
+# Design B variants, each with its own fixed second-order scales
+b_variants:
+  B: [0.0625, 0.03125]            # the Phase 2 default
+  B_shifted: [0.088, 0.044]       # half an octave higher
+  B_wide: [0.125, 0.0625, 0.03125, 0.0156]  # four scales covering the sweep
+
+output_dir: runs/phase2_envelope_sweep

@@ -17,6 +17,7 @@ pytest                             # probe + pipeline tests
 python experiments/phase0_smoke.py # renders figures into runs/phase0/
 python experiments/phase1_v1.py    # V1 exit checks -> runs/phase1/report.json
 python experiments/phase2_v2.py    # V2 A-vs-B + TICA (~2 min); --config configs/phase2_rica.yaml for RICA
+python experiments/phase2_envelope_sweep.py  # second-order probe across envelope frequencies (~4 min)
 ```
 
 ## Layout
@@ -97,9 +98,11 @@ signed coefficients plus sheet-pooled energy, held out, averaged over 3 splits.
 | Unit sparsity (excess kurtosis) | — | 1.45 | 0.11 | 1.29 | 0.14 |
 
 Findings and caveats:
-- The one probe that separates the designs is second-order texture: V1 is at
-  chance, A (linear over V1 maps) partly recovers it through rectification,
-  B's filter-rectify-filter path solves it.
+- The one probe that separates the designs is second-order texture: V1 reads
+  0.51 (chance is 0.25; see the envelope sweep below for why it is above
+  chance), A (linear over V1 maps) partly recovers it through rectification,
+  B's filter-rectify-filter path solves it. The probe's envelope frequency
+  (0.0625) equals one of B's fixed scales, which the sweep below checks.
 - First-order texture, junctions and boundaries are at ceiling even for V1
   alone, so they don't yet discriminate A from B. Harder variants (lower
   contrast, added noise, finer class spacing) are needed before Phase 5 leans on them.
@@ -118,6 +121,40 @@ Findings and caveats:
   layout is refined by greedy unit swaps that lower the TICA loss (gradients
   alone leave patchy maps); RICA normalizes rows inside the objective
   (otherwise every unit collapses to zero).
+
+## Phase 2 follow-up: envelope-frequency sweep
+
+`python experiments/phase2_envelope_sweep.py` (~4 min). Second-order texture
+decoding (4-way, chance 0.25) as the envelope frequency varies, with two extra
+B variants: second-order scales shifted +½ octave, and four scales spanning the sweep.
+
+| Envelope (cyc/px) | V1 | A | B (0.0625, 0.031) | B shifted (0.088, 0.044) | B 4 scales |
+|---|---|---|---|---|---|
+| 0.0156 | 0.25 | 0.45 | 0.92 | 0.75 | 0.98 |
+| 0.022 | 0.31 | 0.52 | 0.99 | 0.93 | 1.00 |
+| 0.031 | 0.37 | 0.58 | 1.00 | 1.00 | 1.00 |
+| 0.044 | 0.58 | 0.75 | 1.00 | 1.00 | 1.00 |
+| 0.0625 | 0.57 | 0.81 | 1.00 | 1.00 | 1.00 |
+| 0.088 | 0.71 | 0.94 | 0.79 | 0.99 | 0.95 |
+| 0.125 | 0.84 | 0.95 | 0.54 | 0.57 | 0.87 |
+| 0.177 | 0.96 | 0.99 | 0.47 | 0.48 | 0.59 |
+
+What it shows:
+- **The probe is only purely second-order at low envelope frequencies.**
+  Modulating the carrier adds Fourier sidebands that V1 energy can read, so V1
+  climbs from chance (0.0156) to 0.96 (0.177). Only below ~0.03 is V1 near chance.
+- **In the purely second-order regime B's advantage is architectural.** B
+  beats A by 0.4–0.5 there, including half an octave below its lowest scale,
+  and the shifted B still beats A by 0.3 at 0.0156.
+- **Scale choice matters at the edges.** Each B variant's high plateau moves
+  with its scales (shifted B holds 0.99 at 0.088 where B drops to 0.79), and
+  the four-scale bank widens the plateau.
+- **B loses first-order information that it contains.** Above ~0.09, A and
+  even V1 alone beat every B variant. The 64-dim PCA before TICA keeps 11% of
+  the 24 first-order channels' variance against 38% for the 160 second-order
+  ones, so the first-order channels are crowded out: at 0.177 they alone decode
+  0.93, but B after TICA gets 0.59. A fix is to whiten the two channel groups
+  with separate budgets (or weight them equally) before TICA.
 
 ## Related code elsewhere in this repo
 
