@@ -1,0 +1,26 @@
+# Section 7, step FE-1: V1 -> V2 with one free-energy objective (amortized,
+# Gaussian q, TICA prior, fixed precision). Run: python experiments/fe1_free_energy.py
+base_config: configs/phase3.yaml   # data split and decoder settings; V1/V2 via its base
+
+train:
+  n_iter: 1500
+  batch: 32
+  lr: 0.001
+  warmup: 500          # KL warm-up steps (plan 7.5)
+  arrange_every: 250   # re-seat units on the sheet (lowers the TICA prior term)
+
+runs:                  # name: [encoder init, log precision]
+  identity_precision: [tica, 0.0]     # the literal "Pi = I" in standardized units
+  tica_start: [tica, 3.0]             # pi = e^3 ~ 20 ~ 1 / (3a residual variance)
+  random_start: [random, 3.0]
+  high_precision: [tica, 5.0]         # added after the run above, for diagnosis (not used by the checks)
+
+probes:
+  envelope_freqs: [0.0156, 0.0625]    # 0.0156 is purely second-order (V1 at chance)
+
+checks:
+  max_r2_below_3a: 0.01          # FE reconstruction at least matches 3a (within this)
+  min_emergent_topography: 2.0   # near/far energy-corr ratio from a random start (Phase 2 threshold)
+  min_second_order_acc: 0.95     # encoder keeps Phase 2's second-order texture result
+
+output_dir: runs/fe1

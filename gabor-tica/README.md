@@ -19,6 +19,7 @@ python experiments/phase1_v1.py    # V1 exit checks -> runs/phase1/report.json
 python experiments/phase2_v2.py    # V2 A-vs-B + TICA (~2 min); --config configs/phase2_rica.yaml for RICA
 python experiments/phase2_envelope_sweep.py  # second-order probe across envelope frequencies (~5 min)
 python experiments/phase3_generative.py      # generative path + wake-sleep (~6 min)
+python experiments/fe1_free_energy.py        # Section 7 FE-1: one free-energy objective (~8 min)
 ```
 
 ## Layout
@@ -47,6 +48,7 @@ gabor-tica/
 | 1 | Developmental V1 (quadrature Gabor, energy, divisive norm, log) | ✅ fixed bank; exit checks pass (developmental variant deferred) |
 | 2 | V2 block, Design A vs. B, TICA | ✅ B ≥ A on all probes; complete TICA and overcomplete RICA |
 | 3 | Generative path, wake–sleep (or FE-1, Section 7) | ⚠️ 3a ✅; 3b stable but misses the R²-drop check by 0.002; 3c no gain |
+| FE-1 | Free energy replaces wake–sleep (Section 7) | ⚠️ 3 of 4 checks; loses linear second-order readout at the preset precision |
 | 4 | Temporal coherence | — |
 | 5 | V4 → PIT → AIT | — |
 | 6 | Thalamic gain (attention field) | — |
@@ -240,6 +242,58 @@ Findings:
 - Not done: the Gabor tether (V1 filters drifting "on rails"). V1 is fixed,
   since a V1-power-map generative model gives no signal for moving the V1
   filters themselves; that needs a pixel-level term.
+
+## Section 7, FE-1 results (`configs/fe1.yaml`)
+
+Wake–sleep replaced by one variational free energy, minimized over encoder
+and decoder together on real V1 maps (no fantasies, so no sleep-phase bias):
+
+    F = ½ π ‖x − g(z)‖² − (N/2) log π + Σ_locations Σ_i √(Σ_j h_ij z_j² + ε) − H[q]
+
+q(z|x) is Gaussian: the fixed Design B front end with affine heads for the
+mean and log σ (amortized, one reparameterized sample). g is the Phase 3
+decoder. π is fixed (FE-1). Training uses KL warm-up (500 steps) and, every
+250 steps, re-seats units on the sheet by energy correlation. F is invariant
+to permuting units except through the TICA prior, which the re-seating
+lowers; as in Phase 2, gradients alone cannot make those moves.
+
+| Run | Held-out R² | Active units | Topography (active) | 2nd-order texture from μ (env 0.016 / 0.0625) | … from reconstructed V1 maps |
+|---|---|---|---|---|---|
+| Phase 2 TICA + 3a decoder | 0.948 | 64 | 8.1 | 0.91 / 1.00 | — |
+| Π = I, TICA start | 0.902 | 6 | — | 0.69 / 0.79 | 0.92 / 1.00 |
+| π ≈ 20, TICA start | **0.960** | 38 | 5.6 | 0.70 / 0.79 | 0.90 / 1.00 |
+| π ≈ 20, random start | 0.960 | 55 | **2.1** (from 0.9) | 0.67 / 0.82 | 0.91 / 1.00 |
+| π ≈ 150, TICA start (added for diagnosis) | **0.966** | 60 | 3.9 | 0.84 / 0.99 | 0.90 / 1.00 |
+
+Checks (declared before running; the π ≈ 150 run was added afterwards and is
+not used by them): no divergence ✅, reconstruction matches 3a ✅, topography
+emerges from a random start ✅ (2.1 > 2), second-order texture retained ❌.
+
+Findings:
+- **FE beats wake–sleep on reconstruction** (0.960 vs 3b's 0.916 and 3a's
+  0.948) and trains stably. Training on real data only removes wake–sleep's
+  failure mode.
+- **Π = I collapses the posterior**, as expected in standardized units: 6 of
+  64 units carry information. Even π ≈ 20 (1 / the 3a residual variance)
+  leaves 26 units collapsed. The collapsed units form contiguous regions of
+  the sheet. KL warm-up barely changes the count (23 vs 25 active at π ≈ 20
+  without re-seating), so collapse reflects how few V2 dimensions V1 power
+  maps need at that noise level, not an optimization artifact.
+- **The second-order failure is about readability, not information.** Every
+  FE model's reconstructed V1 maps decode second-order texture as well as real
+  maps do, so the envelope is in the latents. At low precision it is not
+  linearly readable from the latent means: FE latents behave like a map of the
+  envelope, with its phase spread across locations, while TICA units behave
+  like invariant (rectified-energy) detectors, which survive the spatially
+  averaged readout. Raising precision to π ≈ 150 keeps 60 units active and
+  restores the readout to 0.84 / 0.99. So the precision is the key free
+  parameter. That is exactly FE-2 (learn π per channel), and the invariance
+  gap is what temporal coherence (Phase 4 / FE-5) is meant to close.
+- **Topography:** from a TICA start it is largely kept (8.1 → 5.6). From a
+  random start a weak map emerges (0.9 → 2.1) only with re-seating; the TICA
+  start also reaches lower F (1.15 vs 1.24), so it is the better optimum.
+- F is still falling at 1,500 steps (mostly the prior term), so these runs are
+  not fully converged.
 
 ## Related code elsewhere in this repo
 
