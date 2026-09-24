@@ -15,5 +15,6 @@ Guidance for working in this subfolder. It is a self-contained PyTorch project
 - Keep the knobs separate (gain, expectation, neighborhoods, routing): each is
   its own module and can be toggled from config.
 - Update the phase-status table in `README.md` when a phase's exit criteria pass.
-- Run from this folder: `pip install -e ".[dev]"`, `pytest`, `python experiments/phase0_smoke.py`.
+- Run from this folder: `pip install -e ".[dev]"`, `pytest`, `python experiments/phaseN_*.py`
+  (each writes figures and a `report.json` with pass/fail per exit check).
   Outputs go to `runs/` (git-ignored).

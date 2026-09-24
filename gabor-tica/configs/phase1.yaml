@@ -1,0 +1,32 @@
+# Phase 1: developmental V1. Run: python experiments/phase1_v1.py
+seed: 0
+image_size: 64
+
+stages:
+  - name: V1
+    kind: v1_gabor
+    n_orientations: 8
+    n_scales: 3
+    max_freq: 0.25          # cycles/pixel; scales are octave-spaced below this
+    bandwidth_octaves: 1.2  # macaque V1 median ~1.4
+    aspect: 0.7             # <1 elongates the envelope along the stripes
+    norm_sigma: 0.05        # semi-saturation (contrast units)
+    norm_spatial_std: 4.0   # normalization pool blur (pixels)
+    norm_pool_groups: 1     # 1 = pool over all channels; n_scales = per scale
+    log_eps: 0.0001          # floor of the log; larger values pile responses at log(eps)
+    decimate: 1
+
+tuning:
+  n_thetas: 36
+  n_freqs: 80
+  contrasts: [0.1, 0.3, 1.0]
+  sf_peak_tolerance: 0.1        # octaves, on filter energy
+  max_phase_modulation: 0.05
+  gaussian_tolerance: 1.0       # |skew| and |excess kurtosis| of log output
+
+natural:
+  folder: null                  # null = repo photos in ../Data/DougsCars
+  max_side: 512
+  n_patches: 128
+
+output_dir: runs/phase1
