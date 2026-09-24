@@ -103,6 +103,54 @@ class Whitener(nn.Module):
         return float(self.variances.sum() / self.mean.numel())
 
 
+class GroupWhitener(nn.Module):
+    """Whiten channel groups with separate dimension budgets, then jointly
+    re-whiten the concatenation at full rank.
+
+    A single PCA over channel groups of very different size or variance lets
+    the larger group crowd the smaller out of the kept subspace. Here each
+    group ``(start, stop, dim)`` keeps its own ``dim`` components; the joint
+    step only decorrelates across groups (it drops nothing), so TICA still sees
+    white input. Same interface as ``Whitener``.
+    """
+
+    def __init__(self, groups: list[tuple[int, int, int]]):
+        super().__init__()
+        self.groups = [tuple(g) for g in groups]
+        self.parts = nn.ModuleList(Whitener() for _ in groups)
+        self.joint = Whitener()
+
+    def fit(self, x: torch.Tensor, dim: int | None = None) -> "GroupWhitener":
+        total = sum(d for _, _, d in self.groups)
+        if dim is not None and dim != total:
+            raise ValueError(f"group budgets sum to {total}, but dim={dim}")
+        zs = [w.fit(x[:, a:b], d).transform(x[:, a:b]) for w, (a, b, d) in zip(self.parts, self.groups)]
+        self.joint.fit(torch.cat(zs, 1), total)
+        return self
+
+    @property
+    def matrix(self) -> torch.Tensor:
+        n_in = max(b for _, b, _ in self.groups)
+        rows = []
+        for w, (a, b, _) in zip(self.parts, self.groups):
+            m = torch.zeros(w.matrix.shape[0], n_in)
+            m[:, a:b] = w.matrix
+            rows.append(m)
+        return self.joint.matrix @ torch.cat(rows, 0)
+
+    @property
+    def offset(self) -> torch.Tensor:
+        inner = torch.cat([w.offset for w in self.parts])
+        return self.joint.matrix @ inner + self.joint.offset
+
+    def transform(self, x: torch.Tensor) -> torch.Tensor:
+        return x @ self.matrix.T + self.offset
+
+    def explained_variance(self) -> list[float]:
+        """Per-group fraction of standardized variance kept."""
+        return [w.explained_variance() for w in self.parts]
+
+
 def fit_tica(
     z: torch.Tensor,
     h: torch.Tensor,
@@ -204,10 +252,17 @@ def arrange_on_sheet(s: torch.Tensor, h: torch.Tensor, max_sweeps: int = 20) -> 
 class TICA(nn.Module):
     """Fitted whitening + TICA/RICA weights on a ``rows`` x ``cols`` sheet."""
 
-    def __init__(self, rows: int, cols: int, radius: int = 1, eps: float = 1e-3):
+    def __init__(
+        self,
+        rows: int,
+        cols: int,
+        radius: int = 1,
+        eps: float = 1e-3,
+        whitener: nn.Module | None = None,
+    ):
         super().__init__()
         self.rows, self.cols, self.eps = rows, cols, eps
-        self.whitener = Whitener()
+        self.whitener = whitener if whitener is not None else Whitener()
         self.register_buffer("h", torus_neighborhood(rows, cols, radius))
         self.register_buffer("weight", torch.empty(0))
 

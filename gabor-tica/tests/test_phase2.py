@@ -130,3 +130,32 @@ def test_decoding_helpers():
     x = torch.randn(150, 5, generator=g) + 3 * torch.nn.functional.one_hot(y, 5)
     assert linear_decode(x, y) > 0.9
     assert linear_decode(torch.randn(150, 5, generator=g), y) < 0.6
+
+
+def test_group_whitener_keeps_budgets_and_whitens_jointly():
+    from gtv.stages.tica import GroupWhitener
+
+    g = torch.Generator().manual_seed(0)
+    # a small first group and a large, high-variance second group that is correlated with it
+    small = torch.randn(4000, 4, generator=g)
+    big = 10 * torch.randn(4000, 40, generator=g) @ torch.randn(40, 40, generator=g) + small.repeat(1, 10)
+    x = torch.cat([small, big], 1)
+    w = GroupWhitener([(0, 4, 4), (4, 44, 12)]).fit(x, 16)
+    z = w.transform(x)
+    assert torch.allclose(torch.cov(z.T), torch.eye(16), atol=0.05)  # jointly white
+    assert torch.allclose(x @ w.matrix.T + w.offset, z, atol=1e-3)
+    # every direction of the small group survives (a shared 16-dim PCA would drop them)
+    fit = torch.linalg.lstsq(z, small).solution
+    assert ((z @ fit - small).pow(2).mean() / small.var()) < 1e-3
+    with pytest.raises(ValueError):
+        GroupWhitener([(0, 4, 4), (4, 44, 12)]).fit(x, 20)
+
+
+def test_v2_group_whitening_forward_matches(fitted):
+    maps, _, _ = fitted
+    v1_freqs = [0.25] * 4 + [0.125] * 4  # V1Stage(4, 2) channel order: (scale, orientation)
+    b = V2Stage(design="B", v1_freqs=v1_freqs, sheet=4, dim=16, whiten_groups=[6, 10],
+                second_order={"freqs": [0.0625]})
+    b.fit(maps, n_iter=30, polish_iter=5)
+    s, f = b(maps), b.features(maps)
+    assert torch.allclose(s[1, :, 3, 3], b.tica(f[1, :, 3, 3][None])[0], atol=1e-3)

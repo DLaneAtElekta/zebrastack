@@ -9,6 +9,10 @@ envelope frequency across ~3.5 octaves and compares:
   B           Phase 2 Design B, second-order scales 0.0625 / 0.03125
   B_shifted   same, scales moved half an octave up (0.088 / 0.044)
   B_wide      four second-order scales spanning the sweep
+  B_shared_pca  B with one PCA over all channels (before the group-whitening fix)
+
+B variants whiten first- and second-order channels with separate budgets
+(``whiten_groups``); with one shared PCA the first-order channels are crowded out.
 
 If B's advantage comes from the architecture, B should beat A across the
 sweep; if it comes from the scale choice, B's curve should peak at its own
@@ -36,8 +40,11 @@ from gtv.viz import fantasy_grid  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 INK, MUTED, GRID = "#1a1a19", "#6b6a63", "#e4e3dc"
-COLORS = {"A": "#eb6834", "B": "#2a78d6", "B_shifted": "#1baf7a", "B_wide": "#e87ba4", "V1": MUTED}
-LABELS = {"V1": "V1 only", "A": "Design A", "B": "Design B", "B_shifted": "B, scales +½ octave", "B_wide": "B, 4 scales"}
+COLORS = {"A": "#eb6834", "B": "#2a78d6", "B_shifted": "#1baf7a", "B_wide": "#e87ba4", "V1": MUTED,
+          "B_shared_pca": "#2a78d6"}
+LABELS = {"V1": "V1 only", "A": "Design A", "B": "Design B", "B_shifted": "B, scales +½ octave",
+          "B_wide": "B, 4 scales", "B_shared_pca": "B, one shared PCA (before fix)"}
+DASHED = {"V1", "B_shared_pca"}
 SEEDS = (0, 1, 2)
 
 
@@ -62,10 +69,10 @@ def main() -> None:
     common = dict(sheet=vc["sheet"], radius=vc["radius"], dim=vc["dim"], tica_mode=vc["tica_mode"])
     stages = {"A": V2Stage(design="A", **common, **vc["design_A"])}
     base_second = vc["design_B"]["second_order"]
-    for name, freqs in sweep["b_variants"].items():
+    for name, var in sweep["b_variants"].items():
         stages[name] = V2Stage(
             design="B", v1_freqs=v1.bank.freq.tolist(), v1_decimate=cfg["v1"]["decimate"],
-            second_order={**base_second, "freqs": freqs}, **common,
+            second_order={**base_second, "freqs": var["freqs"]}, whiten_groups=var["whiten_groups"], **common,
         )
 
     with torch.no_grad():
@@ -103,16 +110,17 @@ def main() -> None:
         }
     summary["V1"] = {"mean_acc": sum(results["V1"]) / len(freqs)}
     report = {"envelope_freqs": freqs, "accuracy": results, "summary": summary,
-              "b_scales": sweep["b_variants"]}
+              "b_variants": sweep["b_variants"]}
     (out / "report.json").write_text(json.dumps(report, indent=2))
 
     # ---- figure
     fig, ax = plt.subplots(figsize=(6.4, 3.6))
     for k in results:
-        ls = ":" if k == "V1" else "-"
-        ax.plot(freqs, results[k], ls, marker="o", markersize=5, linewidth=2, color=COLORS[k], label=LABELS[k])
+        ls = ":" if k in DASHED else "-"
+        ax.plot(freqs, results[k], ls, marker="o", markersize=5, linewidth=2, color=COLORS[k], label=LABELS[k],
+                alpha=0.55 if k == "B_shared_pca" else 1.0)
     for k in ("B", "B_shifted"):
-        for f in sweep["b_variants"][k]:
+        for f in sweep["b_variants"][k]["freqs"]:
             ax.axvline(f, color=COLORS[k], linewidth=0.8, linestyle="--", alpha=0.6)
     ax.axhline(0.25, color=MUTED, linewidth=1, linestyle=":")
     ax.text(freqs[-1], 0.26, "chance", ha="right", va="bottom", fontsize=7, color=MUTED)

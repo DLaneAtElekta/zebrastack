@@ -6,7 +6,9 @@ Design B (primary) - fixed second-order Gabors on each V1 channel, i.e. a
     Only frequency-decreasing paths are kept (second-order frequency at most
     ``path_ratio`` times the parent V1 frequency). The pooled first-order V1
     maps are appended, as in a scattering transform. TICA then runs across
-    channels at each location (a 1x1 reduction).
+    channels at each location (a 1x1 reduction). ``whiten_groups`` gives the
+    first- and second-order groups separate PCA budgets; with one shared PCA
+    the second-order channels crowd out the first-order ones.
 
 Design A (baseline) - no fixed second stage: TICA learns filters directly on
     ``patch`` x ``patch`` neighborhoods of all V1 channels (a strided conv).
@@ -21,7 +23,7 @@ import torch.nn.functional as F
 from .block import Stage
 from .gabor import GaborBank, energy
 from .normalize import DivisiveNormalization, Log
-from .tica import TICA
+from .tica import TICA, GroupWhitener
 
 
 class SecondOrderFeatures(torch.nn.Module):
@@ -94,6 +96,7 @@ class V2Stage(Stage):
         patch: int = 8,
         second_order: dict | None = None,
         eps: float = 1e-3,
+        whiten_groups: list[int] | None = None,
     ):
         super().__init__(name)
         if design not in ("A", "B"):
@@ -102,12 +105,21 @@ class V2Stage(Stage):
         self.patch = patch
         self.tica_mode = tica_mode
         self.dim = dim or sheet * sheet
-        self.tica = TICA(sheet, sheet, radius, eps)
         self.front = None
+        whitener = None
         if design == "B":
             if v1_freqs is None:
                 raise ValueError("design B needs v1_freqs (one per V1 channel)")
             self.front = SecondOrderFeatures(v1_freqs, v1_decimate, **(second_order or {}))
+            if whiten_groups is not None:
+                # [first-order dims, second-order dims]: separate PCA budgets so
+                # the 160 second-order channels cannot crowd out the first-order ones
+                d1, d2 = whiten_groups
+                if d1 + d2 != self.dim or not self.front.include_first_order:
+                    raise ValueError("whiten_groups needs first-order channels and must sum to dim")
+                nf, nc = self.front.n_first, self.front.n_channels
+                whitener = GroupWhitener([(0, nf, d1), (nf, nc, d2)])
+        self.tica = TICA(sheet, sheet, radius, eps, whitener)
 
     # ---- sampling training vectors
     def _vectors(self, v1: torch.Tensor, n_per_image: int, border: int, gen: torch.Generator) -> torch.Tensor:

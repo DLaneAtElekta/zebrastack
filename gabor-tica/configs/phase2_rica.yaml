@@ -16,6 +16,7 @@ v2:
   design_A:
     patch: 8                # 8x8 V1-map cells = 16x16 image px
   design_B:
+    whiten_groups: [24, 40]  # PCA dims for [first-order, second-order] channels (null = one shared PCA)
     second_order:
       freqs: [0.0625, 0.03125]   # cycles / image px
       n_orientations: 4

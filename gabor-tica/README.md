@@ -81,7 +81,8 @@ Notes for later phases:
 `V2Stage` (`kind: v2_tica`) on the Phase 1 V1 decimated 2×, fitted on photo patches.
 - **Design B:** second-order quadrature Gabors (0.0625, 0.03125 cyc/px × 4
   orientations) on each V1 channel, frequency-decreasing paths only (160
-  channels), plus 24 pooled first-order channels, then a 1×1 TICA.
+  channels), plus 24 pooled first-order channels, whitened as two groups
+  (24 + 40 dims), then a 1×1 TICA.
 - **Design A:** TICA learned on 8×8×24 neighborhoods of the V1 maps (a strided conv).
 
 Both reduce to 64 PCA dims, then TICA on an 8×8 torus (complete) or 144 units on
@@ -90,12 +91,16 @@ signed coefficients plus sheet-pooled energy, held out, averaged over 3 splits.
 
 | Probe | V1 only | A (complete) | B (complete) | A (RICA) | B (RICA) |
 |---|---|---|---|---|---|
-| First-order texture (8 orientations) | 1.00 | 1.00 | 0.99 | 1.00 | 0.98 |
+| First-order texture (8 orientations) | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 | **Second-order texture** (4 envelope orientations) | 0.51 | 0.79 | **1.00** | 0.85 | **1.00** |
-| Junctions (line / L / T / X) | 1.00 | 0.99 | 1.00 | 0.98 | 1.00 |
+| Junctions (line / L / T / X) | 1.00 | 0.99 | 1.00 | 0.98 | 0.99 |
 | Texture-boundary AUC | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
-| Energy corr. near / far on sheet | — | 4.5× | 5.2× | 9.6× | 155× |
-| Unit sparsity (excess kurtosis) | — | 1.45 | 0.11 | 1.29 | 0.14 |
+| Energy corr. near / far on sheet | — | 4.5× | 8.9× | 9.6× | 29× |
+| Unit sparsity (excess kurtosis) | — | 1.45 | 0.21 | 1.29 | 0.21 |
+
+B whitens its first-order (24) and second-order (160) channels with separate
+PCA budgets of 24 and 40 dims (`whiten_groups`), then re-whitens jointly;
+see the envelope sweep below for why.
 
 Findings and caveats:
 - The one probe that separates the designs is second-order texture: V1 reads
@@ -109,7 +114,7 @@ Findings and caveats:
 - Readout matters: rectified-only `|s|` hid first-order information carried by
   the sign (B dropped to 0.91 on texture); signed-only `s` hid A's second-order
   information (0.56). Both TICA outputs are used.
-- B's TICA units are nearly Gaussian (kurtosis ≈ 0.1), because the log at the
+- B's TICA units are nearly Gaussian (kurtosis ≈ 0.2), because the log at the
   end of each stage Gaussianizes its input. TICA still finds the variance
   dependencies (strong topography), but there is little sparse structure left
   for it. Worth trying TICA before the log (on normalized energy) in Phase 3.
@@ -124,20 +129,21 @@ Findings and caveats:
 
 ## Phase 2 follow-up: envelope-frequency sweep
 
-`python experiments/phase2_envelope_sweep.py` (~4 min). Second-order texture
-decoding (4-way, chance 0.25) as the envelope frequency varies, with two extra
-B variants: second-order scales shifted +½ octave, and four scales spanning the sweep.
+`python experiments/phase2_envelope_sweep.py` (~5 min). Second-order texture
+decoding (4-way, chance 0.25) as the envelope frequency varies. B variants:
+Phase 2 scales, scales shifted +½ octave, four scales spanning the sweep, and
+the original single-PCA B for reference.
 
-| Envelope (cyc/px) | V1 | A | B (0.0625, 0.031) | B shifted (0.088, 0.044) | B 4 scales |
-|---|---|---|---|---|---|
-| 0.0156 | 0.25 | 0.45 | 0.92 | 0.75 | 0.98 |
-| 0.022 | 0.31 | 0.52 | 0.99 | 0.93 | 1.00 |
-| 0.031 | 0.37 | 0.58 | 1.00 | 1.00 | 1.00 |
-| 0.044 | 0.58 | 0.75 | 1.00 | 1.00 | 1.00 |
-| 0.0625 | 0.57 | 0.81 | 1.00 | 1.00 | 1.00 |
-| 0.088 | 0.71 | 0.94 | 0.79 | 0.99 | 0.95 |
-| 0.125 | 0.84 | 0.95 | 0.54 | 0.57 | 0.87 |
-| 0.177 | 0.96 | 0.99 | 0.47 | 0.48 | 0.59 |
+| Envelope (cyc/px) | V1 | A | B, shared PCA (old) | B | B shifted (0.088, 0.044) | B 4 scales |
+|---|---|---|---|---|---|---|
+| 0.0156 | 0.25 | 0.45 | 0.92 | 0.93 | 0.73 | 0.98 |
+| 0.022 | 0.31 | 0.52 | 0.99 | 1.00 | 0.91 | 1.00 |
+| 0.031 | 0.37 | 0.58 | 1.00 | 1.00 | 1.00 | 1.00 |
+| 0.044 | 0.58 | 0.75 | 1.00 | 1.00 | 1.00 | 1.00 |
+| 0.0625 | 0.57 | 0.81 | 1.00 | 1.00 | 1.00 | 1.00 |
+| 0.088 | 0.71 | 0.94 | 0.79 | 0.88 | 1.00 | 0.93 |
+| 0.125 | 0.83 | 0.95 | 0.54 | 0.83 | 0.87 | 0.92 |
+| 0.177 | 0.96 | 0.99 | 0.47 | 0.88 | 0.90 | 0.93 |
 
 What it shows:
 - **The probe is only purely second-order at low envelope frequencies.**
@@ -145,16 +151,22 @@ What it shows:
   climbs from chance (0.0156) to 0.96 (0.177). Only below ~0.03 is V1 near chance.
 - **In the purely second-order regime B's advantage is architectural.** B
   beats A by 0.4–0.5 there, including half an octave below its lowest scale,
-  and the shifted B still beats A by 0.3 at 0.0156.
-- **Scale choice matters at the edges.** Each B variant's high plateau moves
-  with its scales (shifted B holds 0.99 at 0.088 where B drops to 0.79), and
-  the four-scale bank widens the plateau.
-- **B loses first-order information that it contains.** Above ~0.09, A and
-  even V1 alone beat every B variant. The 64-dim PCA before TICA keeps 11% of
-  the 24 first-order channels' variance against 38% for the 160 second-order
-  ones, so the first-order channels are crowded out: at 0.177 they alone decode
-  0.93, but B after TICA gets 0.59. A fix is to whiten the two channel groups
-  with separate budgets (or weight them equally) before TICA.
+  and the shifted B still beats A by ~0.3 at 0.0156.
+- **Scale choice matters at the edges.** Each B variant's plateau moves with
+  its scales (shifted B holds 1.00 at 0.088 where B gets 0.88), and the
+  four-scale bank widens it.
+- **One shared PCA crowded out B's first-order channels.** The 64-dim PCA
+  kept 11% of the 24 first-order channels' variance vs 38% for the 160
+  second-order ones, so at high envelope frequencies B fell below V1 alone
+  (0.47 at 0.177). Whitening the groups separately (24 + 40 dims, then a
+  full-rank joint re-whitening so TICA still sees white input) lifts B to
+  0.83–0.88 there. Budget splits tried at 0.177: shared 0.59, 24+40 0.93,
+  16+48 0.92, 8+56 0.85.
+- **What remains of the high-frequency gap is mostly readout overfitting.**
+  A and B each give the readout 128 features but it trains on 192 images;
+  with 768 training images B reaches 0.94 / 0.97 at 0.125 / 0.177 against A's
+  0.99 / 1.00. A keeps a small edge on this first-order leakage, which its
+  learned 8×8 spatial filters over V1 maps can pick up directly.
 
 ## Related code elsewhere in this repo
 
