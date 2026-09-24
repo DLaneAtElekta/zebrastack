@@ -36,6 +36,12 @@ Herring stack visual system model using ResNet as a base, including:
 - HerringstackApi — C# ASP.NET Core API for image latent vectors
 - Training notebooks for ResNet34/50 VAE variants
 
+## Gabor–TICA ventral stream (`gabor-tica/`)
+
+PyTorch prototype of a V1 → AIT hierarchy with fixed Gabor filtering, topographic ICA,
+a wake–sleep generative path and thalamic attention/expectation. See
+`gabor-tica/README.md` and the phased plan in `gabor-tica/docs/PLAN.md`.
+
 ## PyTorch CIFAR10 (merged from pytorch-cifar)
 
 CIFAR10 classification experiments with PyTorch, including model zoo:

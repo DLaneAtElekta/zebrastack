@@ -1,0 +1,18 @@
+# Default experiment config. Each stage is declared so blocks can be swapped
+# without code changes (plan section 4, "Hydra or plain YAML configs").
+seed: 0
+device: cpu
+image_size: 64
+
+probes:
+  n_orientations: 8
+  spatial_freqs: [0.05, 0.1, 0.2]   # cycles / pixel
+  contrast: 1.0
+
+stages:
+  - name: V1
+    kind: identity                  # Phase 0: pass-through; Phase 1: gabor
+  # - name: V2
+  #   kind: tica
+
+output_dir: runs/phase0

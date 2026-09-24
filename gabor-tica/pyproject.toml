@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gtv"
+version = "0.0.1"
+description = "Gabor-TICA ventral stream with thalamocortical modulation"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.1",
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+scattering = ["kymatio"]          # Phase 2, Design B prototype
+tracking = ["tensorboard"]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["gtv*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
