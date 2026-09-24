@@ -20,6 +20,7 @@ python experiments/phase2_v2.py    # V2 A-vs-B + TICA (~2 min); --config configs
 python experiments/phase2_envelope_sweep.py  # second-order probe across envelope frequencies (~5 min)
 python experiments/phase3_generative.py      # generative path + wake-sleep (~6 min)
 python experiments/fe1_free_energy.py        # Section 7 FE-1: one free-energy objective (~8 min)
+python experiments/fe2_precision.py          # FE-2: learned per-channel precision, V1 norm on/off (~8 min)
 ```
 
 ## Layout
@@ -49,6 +50,7 @@ gabor-tica/
 | 2 | V2 block, Design A vs. B, TICA | ✅ B ≥ A on all probes; complete TICA and overcomplete RICA |
 | 3 | Generative path, wake–sleep (or FE-1, Section 7) | ⚠️ 3a ✅; 3b stable but misses the R²-drop check by 0.002; 3c no gain |
 | FE-1 | Free energy replaces wake–sleep (Section 7) | ⚠️ 3 of 4 checks; loses linear second-order readout at the preset precision |
+| FE-2 | Learned per-channel precision | ⚠️ 2 of 4 checks; precision learns cleanly with V1 normalization, but doesn't fix the second-order readout |
 | 4 | Temporal coherence | — |
 | 5 | V4 → PIT → AIT | — |
 | 6 | Thalamic gain (attention field) | — |
@@ -294,6 +296,60 @@ Findings:
   start also reaches lower F (1.15 vs 1.24), so it is the better optimum.
 - F is still falling at 1,500 steps (mostly the prior term), so these runs are
   not fully converged.
+
+## Section 7, FE-2 results (`configs/fe2.yaml`)
+
+The precision π is now learned per V1 channel by minimizing F: held at FE-1's
+value (log π = 3) for 500 steps, then freed, clamped to log π ∈ [−2, 8]
+(plan 7.5). Run for V1 with and without divisive normalization (new
+`V1Stage(normalize=False)`: log of raw energy); each variant gets its own V2
+TICA fit.
+
+| V1 | Precision | Held-out R² | Active units | Topography | 2nd-order texture (env 0.016 / 0.0625) | Learned log π, fine / mid / coarse |
+|---|---|---|---|---|---|---|
+| normalized | fixed (FE-1) | 0.960 | 38 | 5.6 | 0.64 / 0.83 | 3.0 / 3.0 / 3.0 |
+| normalized | **learned** | 0.960 | 40 | 6.6 | 0.63 / 0.86 | 2.5 / 3.4 / 4.2 |
+| unnormalized | fixed | 0.982* | 51 | 2.3 | 0.81 / 1.00 | 3.0 / 3.0 / 3.0 |
+| unnormalized | learned | 0.982* | 47 | 2.2 | 0.81 / 1.00 | 2.6 / 3.1 / 3.4 |
+
+\* Not comparable with the normalized rows. Without normalization every
+channel shares a large per-patch log-contrast component, which is easy to
+predict and inflates R².
+
+Checks (declared before running): no runaway ✅, learned precision matches its
+maximum-likelihood value ❌ (normalized ✅ within 0.01; unnormalized lags by
+0.84, see below), second-order readout fixed ❌ (0.86 < 0.95), reconstruction
+kept ✅.
+
+Findings:
+- **What the model learns to trust:** with normalization, precision rises
+  steeply with scale (π ≈ 12 fine, 30 mid, 65 coarse). V2 predicts coarse V1
+  channels well and fine ones poorly; oblique orientations get slightly more
+  precision than cardinal ones. It matches the maximum-likelihood precision
+  (1 / residual variance) within 0.05 per scale.
+- **Learned precision does not fix FE-1's second-order readout, as
+  predicted.** The contrast envelope rides on the fine carrier channels,
+  exactly the ones learned precision down-weights. FE-1's diagnostic run
+  (uniform π ≈ 150) worked because it up-weighted them. What precision to put
+  on fine channels is a modeling choice that ML precision alone gets
+  "wrong" for this purpose. Context-dependent precision (FE-3, attention as
+  precision) is the plan's mechanism for up-weighting task-relevant channels.
+- **Interaction with divisive normalization (the plan's FE-2 question):** the
+  hypothesis that normalization equalizes precision across channels is
+  rejected. Normalization makes precision *more* uneven (spread across
+  channels 0.72 vs 0.33 in log π): by dividing out shared local contrast, it
+  removes the easy-to-predict common component and leaves fine channels
+  relatively noisier. It also partly divides out slow contrast modulation (the
+  V1 pool blur is 4 px), which weakens the second-order signal: without
+  normalization the FE latents decode the envelope far better (0.81 / 1.00 vs
+  0.63 / 0.86). In the plan's Section 7 terms, divisive normalization already
+  applies a locally inferred precision; learning a second, global per-channel
+  precision on top of it is partly redundant with it and partly in conflict.
+- **Without normalization, precision did not converge in 1,000 free steps.**
+  It lagged its maximum-likelihood value by 0.76 and was still rising: as
+  precision rises the decoder fits tighter, the residual shrinks, and the
+  target rises again (the slow runaway plan 7.5 warns about). It never
+  reached the bound. Normalization's bounded residuals let precision settle.
 
 ## Related code elsewhere in this repo
 

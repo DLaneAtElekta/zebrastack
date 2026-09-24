@@ -132,6 +132,10 @@ def fit_free_energy(
     lr: float = 3e-3,
     warmup: int = 0,
     arrange_every: int | None = None,
+    learn_precision: bool = False,
+    free_precision_after: int = 0,
+    log_precision_bounds: tuple[float, float] = (-2.0, 8.0),
+    lr_precision: float = 1e-2,
     generator=None,
     log_every: int = 50,
 ) -> dict:
@@ -141,11 +145,21 @@ def fit_free_energy(
     over that many steps ("KL warm-up", plan 7.5), so units become useful for
     reconstruction before the prior can collapse them. ``arrange_every``
     re-seats units on the sheet at that interval (see ``rearrange_units``);
-    Adam's moment estimates are reset after each re-seating."""
+    Adam's moment estimates are reset after each re-seating.
+
+    FE-2: with ``learn_precision`` the per-channel log precision (pass a (C,)
+    tensor as the initial value) is learned by minimizing F too, but only after
+    ``free_precision_after`` steps, and clamped to ``log_precision_bounds``
+    (plan 7.5: runaway precision). The fitted value is returned in the history
+    as ``log_precision``."""
     f_train = encoder.features(v1_train)
     x_train = decoder.from_v1(v1_train)
     params = [p for n, p in decoder.named_parameters() if n != "log_psi"] + list(encoder.parameters())
     opt = torch.optim.Adam(params, lr=lr)
+    if learn_precision:
+        log_precision = nn.Parameter(log_precision.detach().clone().expand(x_train.shape[1]).contiguous())
+        opt_pi = torch.optim.Adam([log_precision], lr=lr_precision)
+    lo, hi = log_precision_bounds
     n_el = x_train[0, :, 2:-2, 2:-2].numel()
     hist = {"iter": [], "F_per_element": [], "accuracy": [], "prior": [], "entropy": []}
     for it in range(n_iter):
@@ -158,14 +172,34 @@ def fit_free_energy(
         beta = min(1.0, it / warmup) if warmup else 1.0
         loss = (terms["accuracy"] + beta * (terms["prior"] - terms["entropy"])).mean() / n_el
         opt.zero_grad()
+        if learn_precision:
+            opt_pi.zero_grad()
         loss.backward()
         opt.step()
+        if learn_precision and it >= free_precision_after:
+            opt_pi.step()
+            with torch.no_grad():
+                log_precision.clamp_(lo, hi)
         if it % log_every == 0 or it == n_iter - 1:
             hist["iter"].append(it)
             hist["F_per_element"].append(terms["F"].mean().item() / n_el)
             for k in ("accuracy", "prior", "entropy"):
                 hist[k].append(terms[k].mean().item() / n_el)
+            hist.setdefault("log_precision_mean", []).append(float(log_precision.detach().mean()))
+    hist["log_precision"] = log_precision.detach().clone()
     return hist
+
+
+def residual_log_precision(encoder: AmortizedEncoder, decoder: ConvFactorAnalysis, v1: torch.Tensor,
+                           border: int = 2) -> torch.Tensor:
+    """Maximum-likelihood log precision per channel, log(1 / mean residual^2),
+    using posterior samples (the accuracy term's own optimum)."""
+    with torch.no_grad():
+        x = decoder.from_v1(v1)
+        mu, log_sigma = encoder(v1)
+        z = mu + log_sigma.exp() * torch.randn_like(mu)
+        err = (x - decoder.mean(z))[..., border:-border, border:-border]
+        return -err.pow(2).mean((0, 2, 3)).log()
 
 
 def encoder_r2(encoder: AmortizedEncoder, decoder: ConvFactorAnalysis, v1: torch.Tensor, border: int = 4) -> float:

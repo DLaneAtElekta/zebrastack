@@ -9,7 +9,15 @@ Modules:
 """
 
 from .decoders import ConvFactorAnalysis
-from .free_energy import AmortizedEncoder, TICAPrior, active_units, encoder_r2, fit_free_energy, free_energy
+from .free_energy import (
+    AmortizedEncoder,
+    TICAPrior,
+    active_units,
+    encoder_r2,
+    fit_free_energy,
+    free_energy,
+    residual_log_precision,
+)
 from .diagnostics import discriminability, map_statistics, statistic_gap
 from .priors import IIDGaussianPrior, SpatialGaussianPrior, StationaryGaussianPrior, VarianceFieldPrior
 from .wake_sleep import Recognition, fit_decoder, recon_r2, wake_sleep
@@ -31,6 +39,7 @@ __all__ = [
     "fit_decoder",
     "map_statistics",
     "recon_r2",
+    "residual_log_precision",
     "statistic_gap",
     "wake_sleep",
 ]

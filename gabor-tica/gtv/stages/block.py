@@ -57,10 +57,12 @@ class V1Stage(Stage):
         norm_pool_groups: int = 1,
         log_eps: float = 1e-4,
         decimate: int = 1,
+        normalize: bool = True,
     ):
         super().__init__(name)
         self.bank = GaborBank(n_orientations, n_scales, max_freq, bandwidth_octaves, aspect)
-        self.norm = DivisiveNormalization(norm_sigma, norm_spatial_std, norm_pool_groups)
+        # normalize=False skips divisive normalization (log of raw energy), for ablations
+        self.norm = DivisiveNormalization(norm_sigma, norm_spatial_std, norm_pool_groups) if normalize else nn.Identity()
         self.log = Log(log_eps)
         self.decimate = decimate
 

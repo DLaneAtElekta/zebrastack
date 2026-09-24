@@ -1,0 +1,20 @@
+# Section 7, step FE-2: learnable per-channel precision, and how it interacts
+# with V1 divisive normalization. Run: python experiments/fe2_precision.py
+base_config: configs/fe1.yaml
+
+precision:
+  init_log: 3.0              # FE-1's fixed value; held there until free_after
+  free_after: 500
+  bounds: [-2.0, 8.0]        # plan 7.5: bound log precision against runaway
+  lr: 0.01
+
+v1_variants:                 # V1 with and without divisive normalization
+  normalized: true
+  unnormalized: false
+
+checks:                      # declared before running
+  max_mle_gap: 0.5           # |learned - ML log precision| per channel (median)
+  min_second_order_acc: 0.95 # at envelope 0.0625, from latent means (FE-1 failed this)
+  max_r2_below_fe1: 0.01     # vs the fixed-precision run with the same V1
+
+output_dir: runs/fe2
