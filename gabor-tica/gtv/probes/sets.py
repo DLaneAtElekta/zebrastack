@@ -70,3 +70,48 @@ def boundary_set(p, size, gen, cell=4, border=2):
     inner = torch.zeros(grid, grid, dtype=torch.bool)
     inner[border:-border, border:-border] = True
     return torch.stack(imgs).unsqueeze(1), d, inner
+
+
+SCENE_KINDS = ("target", "distractor", "absent")
+
+
+def second_order_scene(
+    size: int,
+    background: torch.Tensor,
+    kind: str,
+    gen: torch.Generator,
+    target_theta: float = math.pi / 4,
+    distractor_theta: float = 3 * math.pi / 4,
+    envelope_freq: float = 0.0625,
+    carrier_freq: float = 0.25,
+    target_contrast: float = 1.0,
+    window_sigma: float = 12.0,
+) -> torch.Tensor:
+    """A texture patch blended into natural clutter (the V2-level analog of a
+    target in a cluttered scene, for FE-3).
+
+    ``target``: carrier contrast-modulated at ``target_theta``; ``distractor``:
+    modulated at ``distractor_theta``; ``absent``: the same carrier,
+    unmodulated. Carrier orientation and envelope phase are random, so only the
+    second-order structure separates target from absent. ``background`` is a
+    (size, size) clutter patch, scaled here to unit standard deviation.
+    """
+    if kind not in SCENE_KINDS:
+        raise ValueError(f"kind must be one of {SCENE_KINDS}")
+    bg = (background - background.mean()) / (background.std() + 1e-8)
+    carrier = oriented_noise(size, rand(gen, 0, math.pi), carrier_freq, generator=gen)
+    carrier = carrier / (carrier.std() + 1e-8)
+    if kind == "absent":
+        envelope = torch.full((size, size), 0.5)
+    else:
+        theta = target_theta if kind == "target" else distractor_theta
+        from .stimuli import grating
+
+        envelope = 0.5 * (1 + grating(size, envelope_freq, theta, rand(gen, 0, 2 * math.pi)))
+    # equal mean power in all kinds: E[envelope^2] is 3/8 when modulated, 1/4 when flat
+    if kind == "absent":
+        envelope = envelope * math.sqrt(1.5)
+    c = (torch.arange(size, dtype=torch.float32) - (size - 1) / 2)
+    yy, xx = torch.meshgrid(c, c, indexing="ij")
+    window = torch.exp(-0.5 * (xx**2 + yy**2) / window_sigma**2)
+    return bg + target_contrast * window * carrier * envelope

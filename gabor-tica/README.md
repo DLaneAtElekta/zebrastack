@@ -21,6 +21,7 @@ python experiments/phase2_envelope_sweep.py  # second-order probe across envelop
 python experiments/phase3_generative.py      # generative path + wake-sleep (~6 min)
 python experiments/fe1_free_energy.py        # Section 7 FE-1: one free-energy objective (~8 min)
 python experiments/fe2_precision.py          # FE-2: learned per-channel precision, V1 norm on/off (~8 min)
+python experiments/fe3_context_precision.py  # FE-3 (V2-level analog): context precision, target in clutter (~15 min)
 ```
 
 ## Layout
@@ -51,6 +52,7 @@ gabor-tica/
 | 3 | Generative path, wake–sleep (or FE-1, Section 7) | ⚠️ 3a ✅; 3b stable but misses the R²-drop check by 0.002; 3c no gain |
 | FE-1 | Free energy replaces wake–sleep (Section 7) | ⚠️ 3 of 4 checks; loses linear second-order readout at the preset precision |
 | FE-2 | Learned per-channel precision | ⚠️ 2 of 4 checks; precision learns cleanly with V1 normalization, but doesn't fix the second-order readout |
+| FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; negative result with diagnosis |
 | 4 | Temporal coherence | — |
 | 5 | V4 → PIT → AIT | — |
 | 6 | Thalamic gain (attention field) | — |
@@ -350,6 +352,77 @@ Findings:
   precision rises the decoder fits tighter, the residual shrinks, and the
   target rises again (the slow runaway plan 7.5 warns about). It never
   reached the bound. Normalization's bounded residuals let precision settle.
+
+## Section 7, FE-3 results (`configs/fe3.yaml`)
+
+The plan's FE-3 check (cat d′ in clutter; false alarms) needs categories and
+Phases 5–7. This is its **V2-level analog**. Natural photo clutter has a
+texture patch blended into the center:
+- **target:** contrast modulation at 45°;
+- **distractor:** modulation at 135° (the "non-cat");
+- **absent:** unmodulated.
+
+Added power is matched across kinds, and carrier orientation and envelope
+phase are random, so only second-order structure separates target from
+absent. Detection d′ (target vs absent) and false alarms (distractors
+scored as targets, at a threshold catching 80% of targets) come from a
+held-out linear readout of the posterior means.
+
+Context precision needs inference that reads F (the amortized encoder
+ignores Π at test time), so FE-3 adds settling: gradient descent on F from
+the encoder's guess, with the step scaled by the accuracy term's curvature
+(power iteration). Precision profiles, all on the same trained FE-2 model:
+- **base:** FE-2's learned precision;
+- **FE-3 context:** fitted by minimizing F on target-context scenes (the
+  closed-form optimum, 1 / residual variance, iterated with settling);
+- **expected-signal:** precision raised where the target is expected to add
+  variance (attention as the precision of expected signals), as a comparator;
+- **fine ±3:** extreme profiles, for diagnosis.
+
+| Inference | Precision | d′ | False alarms (distractor) | Latent change vs encoder | Natural-image R² |
+|---|---|---|---|---|---|
+| amortized | — | **1.60** | **0.33** | — | 0.960 |
+| 40 gradient steps | base | 1.60 | 0.34 | 11% | 0.966 |
+| 40 gradient steps | FE-3 context | 1.59 | 0.33 | 7% | 0.966 |
+| 40 gradient steps | expected-signal | 1.59 | 0.34 | 9% | 0.967 |
+| converged (L-BFGS)* | base | 0.46 | 0.84 | 64% | 0.954 |
+| converged* | FE-3 context | 0.47 | 0.85 | 62% | 0.961 |
+| converged* | expected-signal | 0.45 | 0.86 | 61% | 0.965 |
+| converged* | fine +3 | 0.51 | 0.81 | 73% | 0.971 |
+| converged* | fine −3 | 0.19 | 0.86 | 78% | 0.884 |
+
+\* Added after the first run, for diagnosis; not used by the checks.
+
+Checks (declared before running): FE-3 raises d′ by ≥ 0.3 ❌ (−0.01); no
+extra false alarms ✅.
+
+Findings:
+- **Context precision had no effect with short settling.** The accuracy term
+  is stiff (curvature ≈ 1450), so 40 gradient steps move the latents only
+  7–11%, and precision cannot act.
+- **With converged settling, precision acts in the expected direction but
+  cannot rescue the task.** Up-weighting fine channels helps (0.51) and
+  down-weighting hurts (0.19), and the two profiles' latents differ by 73%.
+  But converged inference itself wrecks detection (1.60 → 0.46; false alarms
+  0.33 → 0.84) while reconstructing natural images as well as or better than
+  the encoder. The model's own F optimum is indifferent to the invariant,
+  TICA-like structure the task needs: with a linear decoder and a prior that
+  treats locations independently, many latent codes explain a V1 map equally
+  well, and settling drifts away from the encoder's structured one. This
+  answers the plan's FE-4 question (amortized vs hybrid) early, and
+  negatively, for this generative model: iterative inference hurts.
+- **F-learned context precision is not attention.** Fitted on target
+  scenes, it rises most on coarse channels (+1.4 log units), where the
+  cluttered scenes are easy to predict, not on the channels that carry the
+  target. Precision chosen by F alone tracks predictability, not relevance.
+  The expected-signal comparator does pick the target's channels (fine and
+  mid, strongest at 45°), but with this model no precision profile helps.
+- Implication for the plan (Section 7.3): the attention half of each accuracy
+  term (precision) needs its expectation half. The context must predict
+  *content* (the top-down template of Phases 6–7), and the generative model
+  must be strong enough that its F optimum keeps the structure the task
+  depends on: spatially coupled latent priors (Phase 3 showed they matter),
+  richer decoders, and invariance from temporal coherence (Phase 4).
 
 ## Related code elsewhere in this repo
 

@@ -1,0 +1,26 @@
+# Section 7, step FE-3 (V2-level analog): context-conditioned precision acting
+# at inference. Target in clutter: a contrast-modulated texture (45 deg envelope)
+# blended into natural photo clutter; distractor = 135 deg envelope; absent =
+# unmodulated. Run: python experiments/fe3_context_precision.py
+base_config: configs/fe2.yaml
+
+scenes:
+  n_per_kind: 160          # held-out photos, per scene kind (target / distractor / absent)
+  n_context: 128           # target scenes from training photos, to fit context precision
+  target_contrast: 1.0     # calibrated so baseline detection is neither trivial nor impossible
+  window_sigma: 12.0
+  envelope_freq: 0.0625
+
+settle:
+  n_steps: 40
+  step: 1.0                # fraction of 1 / curvature (stable below 2)
+
+context_fit_rounds: 3
+converged_settle_steps: 100   # L-BFGS; diagnostic conditions added after the first run (not used by the checks)
+hit_rate_for_fa: 0.8       # false-alarm threshold: the score that catches this fraction of targets
+
+checks:                    # declared before running
+  min_dprime_gain: 0.3     # FE-3 context precision vs settling with base precision
+  max_fa_increase: 0.05
+
+output_dir: runs/fe3
