@@ -26,6 +26,7 @@ python experiments/fe3_prior_test.py         # is the per-location prior FE-3's 
 python experiments/phase4_temporal.py        # Phase 4: temporal coherence on drift sequences (~6 min)
 python experiments/phase5_hierarchy.py       # Phase 5: V4 -> PIT -> AIT on Fashion-MNIST (~15 min; downloads data once)
 python experiments/phase5_hierarchy.py --config configs/phase5b.yaml  # Phase 5b: full pass-through (~25 min)
+python experiments/phase5c_learned_filters.py                         # Phase 5c: learned V4 filters, needs 5b (~70 min)
 python experiments/phase6_attention.py       # Phase 6: attention from top-down templates (needs the Phase 5 checkpoint; ~20 min)
 python experiments/phase6_attention.py --config configs/phase6b.yaml  # Phase 6 on the 5b stack, 600 scenes/kind (~60 min)
 python experiments/phase6_attention.py --config configs/phase6c.yaml  # Phase 6 with a response-noise bottleneck (~60 min)
@@ -61,7 +62,7 @@ gabor-tica/
 | FE-2 | Learned per-channel precision | ⚠️ 2 of 4 checks; precision learns cleanly with V1 normalization, but doesn't fix the second-order readout |
 | FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; no headroom exists at V1–V2 (reconstruction always matches the input ceiling) |
 | 4 | Temporal coherence | ❌ selectivity kept, but invariance gain +0.017 < 0.05; the fixed Design B front end leaves little for W to change |
-| 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance |
+| 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance; 5c: learning V4's Gabor-initialized filters gives no reliable gain |
 | 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar |
 | 7 | Expectation channel | — |
 | 8 | Context topography and routing (stretch) | — |
@@ -722,6 +723,82 @@ Phase 5 checks still pass.
   make rotation easier to read out. Building invariance needs learned upper
   filters, temporal coherence at learned stages, or explicit pooling over
   transformations.
+
+## Phase 5c: Gabor-initialized, learnable V4 filters (`configs/phase5c.yaml`)
+
+The upper stages' only learned part is a complete TICA, which is a rotation
+and cannot make new features. Here V4's second-order Gabors become trainable
+spatial kernels (`SpatialGaborBank` in `LearnedHigherStage`), initialized from
+the fixed bank. Filters stay per input channel, as before; no cross-channel
+mixing yet.
+
+**Training** (`gtv.temporal.fit_stage_filters`):
+- Data: 1,000 Fashion-MNIST images, each paired with a copy shifted ≤ 4 px,
+  rotated ≤ 10° and rescaled ≤ 8%, passed through the loaded Phase 5b V1 and V2.
+- Gradients go through energy, normalization, log and pooling. Whitening and
+  TICA are held fixed and refit in closed form every 200 of 600 steps. The
+  stage is refit once more on the Phase 5b fitting images before evaluation.
+- Loss: bubbles (sparsity plus temporal pooling; temporal weight 0 = "still",
+  the sparsity-only control), plus a whiteness term ‖cov(s) − I‖², plus a
+  tether τ‖K − K₀‖²/‖K₀‖².
+
+**Step 1, learning off:** with 15 × 15 kernels the spatial bank reproduces
+the frequency-domain one (second-order feature correlation 0.99992). But
+refitting TICA on those features lands on a different rotation and sheet,
+moving the matched readout by up to 0.022 (6 px shift). The check
+(≤ 0.01) fails. This is the **refit noise floor**: differences of about ±0.02
+in readout accuracy and ±0.03 in the invariance index come from refitting
+alone.
+
+**Step 2, tether sweep** (matched readout as in Phase 5b; invariance = median
+over 2×2-pooled pooled-energy features of the original vs transformed
+correlation, mean of the three transforms):
+
+| V4 variant | Drift | Original | Shift 6 px | Rotate 15° | Scale 0.85 | Mean transformed | Invariance |
+|---|---|---|---|---|---|---|---|
+| V2 (reference) | — | 0.877 | 0.799 | 0.694 | 0.771 | 0.755 | 0.713 |
+| fixed (Phase 5b) | — | 0.866 | 0.762 | 0.615 | 0.793 | 0.723 | 0.529 |
+| learning off | 0 | 0.873 | 0.784 | 0.603 | 0.799 | 0.728 | 0.560 |
+| still τ = 1 | 0.38 | 0.868 | 0.762 | 0.663 | 0.773 | 0.733 | 0.536 |
+| **bubbles τ = 1** | 0.42 | 0.861 | 0.780 | **0.680** | 0.776 | **0.746** | 0.541 |
+| still τ = 0.1 | 0.50 | 0.865 | 0.767 | 0.627 | 0.762 | 0.719 | 0.541 |
+| bubbles τ = 0.1 | 0.52 | 0.865 | 0.767 | 0.637 | 0.779 | 0.728 | 0.542 |
+| still τ = 0.01 | 0.52 | 0.863 | 0.770 | 0.603 | 0.757 | 0.710 | 0.541 |
+| bubbles τ = 0.01 | 0.53 | 0.872 | 0.766 | 0.624 | 0.774 | 0.721 | 0.514 |
+| still τ = 0 | 0.52 | 0.873 | 0.758 | 0.610 | 0.764 | 0.711 | 0.530 |
+| bubbles τ = 0 | 0.54 | 0.863 | 0.767 | 0.621 | 0.762 | 0.717 | 0.522 |
+
+Checks (declared before running): learning off reproduces the fixed V4 ❌
+(0.022 > 0.01); best bubbles variant's transformed accuracy ≥ fixed + 0.02 ✅
+(+0.023, bubbles τ = 1); invariance index ≥ fixed + 0.05 ❌ (best +0.013);
+the gain beats the same-tether still control by ≥ 0.01 ✅ (+0.013).
+
+Findings:
+- **No reliable invariance from reshaping per-channel filters.** The one
+  passing variant (bubbles τ = 1: rotation 0.615 → 0.680, near V2's 0.694)
+  gains exactly the size of the refit noise, and there is no trend: looser
+  tethers give +0.005, −0.002 and −0.006. The invariance index moves by at
+  most 0.013 against a 0.05 bar. Two checks pass on paper, but I read this as
+  a null result.
+- **The learned kernels keep their Gabor shape and add pixel-level
+  noise** (`phase5c_kernels.png`). Most of the 0.4–0.5 drift is that noise:
+  Adam's per-element steps move every kernel element by about the same
+  amount, including the periphery where gradients are tiny. Drift was still
+  rising at step 600 and levels off at about 0.52 for any τ ≤ 0.1, so the
+  training budget, not the tether, limits it. Drift overstates meaningful
+  change.
+- **The ground-truth probe works** (`tests/test_phase5c.py`): on frame
+  pairs where only an oblique grating's energy persists, learning raises
+  frame-to-frame energy correlation from 0.74 to 0.97. But sparsity alone
+  (still) does the same (0.97) there, so the probe shows the filters can move
+  to the persistent content, not that the temporal term is what moves them.
+- As predicted, a per-channel V4 unit sees one V2 feature at a time. Its
+  kernel can only re-tune within that feature map, so it cannot combine
+  features into more tolerant ones. Next: cross-channel mixing among
+  sheet neighbors (the V2 sheet already places related features together),
+  a smoother update (plain SGD, or kernels parameterized in a smooth basis)
+  trained to convergence, and several refit seeds per variant so gains can be
+  compared to the refit noise.
 
 ## Phase 6 results (`configs/phase6.yaml`)
 
