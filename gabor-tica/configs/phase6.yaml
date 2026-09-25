@@ -1,0 +1,27 @@
+# Phase 6: thalamic gain (attention field) from generative templates.
+# Needs the Phase 5 stack: run experiments/phase5_hierarchy.py first.
+# Run: python experiments/phase6_attention.py
+base_config: configs/phase5.yaml
+stack_checkpoint: runs/phase5/phase5_stages.pt
+
+topdown: {n_fit: 2000, kernel: 3, n_iter: 400, lr: 0.02}
+
+task:
+  target: 7                 # sneaker
+  lookalikes: [5, 9]        # sandal, ankle boot: false-alarm test
+  n_per_kind: 240
+  n_distractors: 3          # plus the target / lookalike; absent scenes get one more distractor
+  attend_stage: V4
+
+betas: [0.0, 0.5, 1.0, 2.0]  # 0 = no attention
+wrong_template: 8            # control: attend to "bag" instead (beta 1)
+
+checks:                      # declared before running
+  min_template_hits: 8       # categories whose decoded template best matches their own actual V4 mean
+  min_dprime_gain: 0.3       # best beta vs beta = 0, AIT readout, no retraining of model weights
+  # added after the feature-only run (declared before the spatial run): spatial
+  # feature-similarity field, same betas; must also beat the wrong-template field
+  spatial_min_dprime_gain: 0.3
+  spatial_min_specificity: 0.2   # d' gain over the wrong-template (bag) spatial field
+
+output_dir: runs/phase6

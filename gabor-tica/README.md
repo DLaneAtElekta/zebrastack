@@ -25,6 +25,7 @@ python experiments/fe3_context_precision.py  # FE-3 (V2-level analog): context p
 python experiments/fe3_prior_test.py         # is the per-location prior FE-3's bottleneck? (~10 min)
 python experiments/phase4_temporal.py        # Phase 4: temporal coherence on drift sequences (~6 min)
 python experiments/phase5_hierarchy.py       # Phase 5: V4 -> PIT -> AIT on Fashion-MNIST (~15 min; downloads data once)
+python experiments/phase6_attention.py       # Phase 6: attention from top-down templates (needs the Phase 5 checkpoint; ~20 min)
 ```
 
 ## Layout
@@ -40,7 +41,7 @@ gabor-tica/
     data/              natural photos, drift sequences, Fashion-MNIST (cached in data_cache/)
     generative/        decoder, latent priors, wake–sleep, fantasy diagnostics (Phase 3)
     temporal/          temporal coherence objectives for TICA       (Phase 4)
-    thalamus/          gain, expectation, routing                  (Phases 6–8)
+    thalamus/          attention fields (Phase 6); expectation, routing planned (7–8)
   experiments/         one runnable script per phase check
   tests/
 ```
@@ -58,7 +59,7 @@ gabor-tica/
 | FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; no headroom exists at V1–V2 (reconstruction always matches the input ceiling) |
 | 4 | Temporal coherence | ❌ selectivity kept, but invariance gain +0.017 < 0.05; the fixed Design B front end leaves little for W to change |
 | 5 | V4 → PIT → AIT | ✅ recognition stack; AIT decoding 0.79, category clusters p < 0.001 (generative path and log-polar input deferred) |
-| 6 | Thalamic gain (attention field) | — |
+| 6 | Thalamic gain (attention field) | ❌ templates work (8/10); feature gain is information-neutral here; spatial field +0.19 d′ (below the 0.3 bar) |
 | 7 | Expectation channel | — |
 | 8 | Context topography and routing (stretch) | — |
 
@@ -666,6 +667,73 @@ Findings and caveats:
   intermittently).
 - Deferred from the plan's Phase 5: log-polar input, and the generative
   decoders with wake–sleep (or free energy) for the full stack.
+
+## Phase 6 results (`configs/phase6.yaml`)
+
+Uses the Phase 5 stack as saved (`runs/phase5/phase5_stages.pt`); no model
+weights are refitted.
+
+**Top-down path** (built here; deferred in Phase 5): convolutional FA
+decoders AIT → PIT → V4, fitted by regression on the stack's own activity for
+2,000 single items (`gtv.generative.topdown`). V4 outputs are mapped to V4's
+energy channels by the pseudo-inverse of its whitening + TICA. A category
+template: clamp AIT to the category's mean activity and decode down.
+**Templates are category-specific:** for 8 of 10 categories the decoded
+template correlates best with that category's actual V4 activity on held-out
+items (median diagonal correlation 0.71) ✅.
+
+**Attention** at V4, as the normalization model of attention: the gain
+multiplies V4's Gabor energies before divisive normalization (`gain` argument
+of `HigherStage`). Two fields:
+- feature-only gain A_c = exp(β z_c), with z_c the target template's
+  deviation from the mean template;
+- (added after the first run, check declared before it) spatial
+  feature-similarity gain A(x, y) = exp(β m(x, y)), with m the local match
+  between V4 features and the template, z-scored per image (Treue &
+  Martinez-Trujillo). No location cue is needed.
+
+**Task:** a sneaker among 3 other Fashion-MNIST items (native 28 px) on the
+64 px canvas, vs 4 distractors (absent), vs a sandal or ankle-boot lookalike
+(false alarms), 240 scenes each. d′ comes from a held-out linear readout of
+AIT, retrained per condition.
+
+| Condition | AIT d′ | False alarms (lookalike) | V4 d′ |
+|---|---|---|---|
+| no attention | 0.37 | 0.73 | 0.60 |
+| feature gain β = 0.5 / 1 / 2 | 0.39 / **0.45** / 0.44 | 0.75 / 0.78 / 0.78 | 0.64 / 0.65 / 0.67 |
+| feature gain, wrong template (bag) | 0.41 | 0.74 | 0.68 |
+| spatial field β = 0.5 / 1 / 2 | 0.41 / 0.38 / **0.56** | 0.71 / 0.75 / 0.78 | 0.60 / 0.60 / 0.63 |
+| spatial field, wrong template (bag) | 0.37 | 0.73 | 0.58 |
+
+Checks (declared before the respective runs): templates category-specific ✅;
+feature gain raises d′ by ≥ 0.3 ❌ (+0.08); spatial field raises d′ by ≥ 0.3
+❌ (+0.19); spatial field target-specific by ≥ 0.2 ❌ (0.19).
+
+Findings:
+- **Feature-only gain is information-neutral in this network.** 99.4% of its
+  effect on V4 features is a constant offset per channel: the log after
+  normalization turns multiplicative gain into an additive shift, which
+  downstream standardization removes. Even before the log, normalized
+  responses with and without gain correlate at 0.994. The network is
+  noiseless, so per-channel rescaling cannot add information, and a
+  wrong-category template does as well as the right one. Attention as gain
+  needs a bottleneck after the gain: noise, saturation or limited capacity.
+  (The same lesson as FE-3's missing headroom.)
+- **The spatial field acts on the real bottleneck, but not yet reliably.**
+  Clutter hurts through pooling (d′ falls from 0.60 at V4 to 0.37 at AIT as
+  receptive fields mix the target with its neighbours). A field that
+  suppresses non-matching locations before pooling gave the only sizeable,
+  specific gain (β = 2: +0.19, wrong template +0.00), but it is below both
+  bars, not monotonic in β, and within split-to-split noise (roughly ±0.1–0.15
+  at 240 scenes per kind).
+- **Attention raises false alarms** on lookalikes (0.73 → 0.78 at the
+  strongest settings), the plan's motivation for Phase 7's expectation channel.
+- A small tuning shift toward the target (Çukur et al.): with β = 1 feature
+  gain, 59% of V4 units shift their relative preference toward sneakers
+  (median log ratio +0.06).
+- The base detection is weak (AIT d′ 0.37), and the stack loses information
+  above V2 (Phase 5). A stronger upper hierarchy is the precondition for a
+  decisive attention test. Larger scene sets would also shrink the d′ noise.
 
 ## Related code elsewhere in this repo
 

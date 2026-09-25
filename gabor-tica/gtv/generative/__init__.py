@@ -7,6 +7,7 @@ Modules:
     free_energy.py  Section 7 FE-1/FE-2: one free-energy objective, amortized TICA-prior VAE
     context.py      Section 7 FE-3: settling on F and context-conditioned precision
     diagnostics.py  V1-map statistics and real-vs-fantasy discriminability
+    topdown.py      top-down decoders through V4 -> PIT -> AIT; category templates (Phase 6)
 """
 
 from .context import context_precision_fe, expected_signal_precision, residual_variance, settle, settle_lbfgs
@@ -30,6 +31,7 @@ from .priors import (
     SumPrior,
     VarianceFieldPrior,
 )
+from .topdown import decode_down, fit_topdown
 from .wake_sleep import Recognition, fit_decoder, recon_r2, wake_sleep
 
 __all__ = [
@@ -47,6 +49,8 @@ __all__ = [
     "SpectralGaussianPrior",
     "SumPrior",
     "context_precision_fe",
+    "decode_down",
+    "fit_topdown",
     "expected_signal_precision",
     "residual_variance",
     "settle",

@@ -32,9 +32,10 @@ def _fetch(name: str) -> Path:
     return path
 
 
-def load_fashion_mnist(split: str = "train", n: int | None = None, size: int = 64, seed: int = 0):
+def load_fashion_mnist(split: str = "train", n: int | None = None, size: int = 64, seed: int = 0, raw: bool = False):
     """(images (N, 1, size, size) float, labels (N,) long). ``n`` draws a
-    class-balanced random subset."""
+    class-balanced random subset. ``raw=True`` returns the native (N, 28, 28)
+    items in [0, 1] instead (for composing cluttered scenes)."""
     img_file, lab_file = FILES[split]
     x = np.frombuffer(gzip.open(_fetch(img_file)).read(), np.uint8, offset=16).reshape(-1, 28, 28)
     y = np.frombuffer(gzip.open(_fetch(lab_file)).read(), np.uint8, offset=8)
@@ -46,6 +47,8 @@ def load_fashion_mnist(split: str = "train", n: int | None = None, size: int = 6
                          for c in range(len(CLASSES))])
         idx = idx[torch.randperm(len(idx), generator=g)]
         x, y = x[idx], y[idx]
+    if raw:
+        return x, y
     up = F.interpolate(x.unsqueeze(1), scale_factor=2, mode="bilinear", align_corners=False)
     pad = (size - up.shape[-1]) // 2
     canvas = F.pad(up, (pad, size - up.shape[-1] - pad, pad, size - up.shape[-1] - pad))

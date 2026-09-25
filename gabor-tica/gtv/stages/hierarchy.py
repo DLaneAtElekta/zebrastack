@@ -49,9 +49,19 @@ class HigherStage(Stage):
         whitener = GroupWhitener([(0, self.n_first, d1), (self.n_first, self.n_first + self.n_second, dim - d1)])
         self.tica = TICA(sheet, sheet, radius, eps, whitener)
 
-    def features(self, x: torch.Tensor, skips: list[torch.Tensor] | None = None) -> torch.Tensor:
-        """(B, C, H, W) [+ skip maps] -> (B, n_first + n_second, H/2, W/2)."""
-        second = F.avg_pool2d(self.log(self.norm(energy(self.bank(x)))), 2)
+    def features(self, x: torch.Tensor, skips: list[torch.Tensor] | None = None,
+                 gain: torch.Tensor | None = None) -> torch.Tensor:
+        """(B, C, H, W) [+ skip maps] -> (B, n_first + n_second, H/2, W/2).
+
+        ``gain`` (block step [3], the thalamic attention field): multiplies the
+        Gabor energies before divisive normalization, drive = A * E, so
+        R = drive / (sigma + pool(drive)) (normalization model of attention).
+        Shape (n_second,) for feature-only gain, or broadcastable to
+        (B, n_second, H, W) for spatial x feature gain."""
+        e = energy(self.bank(x))
+        if gain is not None:
+            e = e * (gain.view(1, -1, 1, 1) if gain.dim() == 1 else gain)
+        second = F.avg_pool2d(self.log(self.norm(e)), 2)
         h, w = second.shape[-2:]
         first = [F.adaptive_avg_pool2d(x, (h, w))]
         for s in skips or []:
@@ -68,8 +78,9 @@ class HigherStage(Stage):
         vecs = f.permute(0, 2, 3, 1).reshape(-1, f.shape[1])
         return self.tica.fit(vecs, self.dim, **tica_kw)
 
-    def forward(self, x: torch.Tensor, skips: list[torch.Tensor] | None = None) -> torch.Tensor:
-        f = self.features(x, skips)
+    def forward(self, x: torch.Tensor, skips: list[torch.Tensor] | None = None,
+                gain: torch.Tensor | None = None) -> torch.Tensor:
+        f = self.features(x, skips, gain)
         m, b = self.tica.affine
         return torch.einsum("nd,bdhw->bnhw", m, f) + b.view(1, -1, 1, 1)
 
@@ -78,3 +89,29 @@ class HigherStage(Stage):
 
     def out_channels(self, in_channels: int) -> int:
         return self.tica.n_units
+
+
+    def features_from_outputs(self, s: torch.Tensor) -> torch.Tensor:
+        """Top-down: the stage's input features implied by outputs ``s``
+        (B, n_units, H, W), via the pseudo-inverse of whitening + TICA (the
+        minimum-norm features in the kept subspace, plus the feature mean)."""
+        m, b = self.tica.affine
+        pinv = torch.linalg.pinv(m)  # (D, n)
+        return torch.einsum("dn,bnhw->bdhw", pinv, s - b.view(1, -1, 1, 1))
+
+    @property
+    def second_order_slice(self) -> slice:
+        return slice(self.n_first, self.n_first + self.n_second)
+
+
+def build_stack(stage_cfgs: dict, in_channels: dict[str, int]) -> dict[str, "HigherStage"]:
+    """Instantiate V4/PIT/AIT from a Phase 5 ``stages`` config. ``in_channels``
+    maps "V1" and "V2" to their channel counts."""
+    stages, prev = {}, in_channels["V2"]
+    for name, sc in stage_cfgs.items():
+        skip = sc.get("skip")
+        stages[name] = HigherStage(name, prev, sc["sheet"], sc["radius"],
+                                   skip_channels=in_channels[skip] if skip else 0)
+        in_channels[name] = stages[name].tica.n_units
+        prev = in_channels[name]
+    return stages

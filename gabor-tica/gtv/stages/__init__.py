@@ -14,7 +14,7 @@ from .gabor import GaborBank, energy
 from .normalize import DivisiveNormalization, Log
 from .tica import TICA, Whitener, arrange_on_sheet, torus_neighborhood
 from .v2 import SecondOrderFeatures, V2Stage
-from .hierarchy import HigherStage
+from .hierarchy import HigherStage, build_stack as build_higher_stack
 from .block import STAGE_KINDS
 
 STAGE_KINDS["v2_tica"] = V2Stage  # registered here to avoid a block <-> v2 import cycle
@@ -23,6 +23,7 @@ __all__ = [
     "DivisiveNormalization",
     "GaborBank",
     "HigherStage",
+    "build_higher_stack",
     "IdentityStage",
     "Log",
     "SecondOrderFeatures",

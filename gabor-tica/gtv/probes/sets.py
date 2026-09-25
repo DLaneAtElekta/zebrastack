@@ -115,3 +115,16 @@ def second_order_scene(
     yy, xx = torch.meshgrid(c, c, indexing="ij")
     window = torch.exp(-0.5 * (xx**2 + yy**2) / window_sigma**2)
     return bg + target_contrast * window * carrier * envelope
+
+
+def clutter_scene(items: list[torch.Tensor], size: int, gen: torch.Generator) -> torch.Tensor:
+    """Place 28x28 item images (values >= 0, black background) at random
+    non-clipped positions on a size x size canvas, combined by max (nearer
+    items occlude); returns the zero-mean canvas (size, size)."""
+    canvas = torch.zeros(size, size)
+    for it in items:
+        h, w = it.shape
+        y = int(torch.randint(0, size - h + 1, (1,), generator=gen))
+        x = int(torch.randint(0, size - w + 1, (1,), generator=gen))
+        canvas[y : y + h, x : x + w] = torch.maximum(canvas[y : y + h, x : x + w], it)
+    return canvas - canvas.mean()
