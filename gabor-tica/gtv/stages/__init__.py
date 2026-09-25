@@ -16,7 +16,7 @@ from .normalize import DivisiveNormalization, Log
 from .tica import TICA, Whitener, arrange_on_sheet, torus_neighborhood
 from .v2 import SecondOrderFeatures, V2Stage
 from .hierarchy import HigherStage, build_stack as build_higher_stack
-from .learned_gabor import LearnedHigherStage, SpatialGaborBank
+from .learned_gabor import GaborMixBank, LearnedHigherStage, SpatialGaborBank
 from .block import STAGE_KINDS
 
 # registered here to avoid block <-> v2 / hierarchy import cycles
@@ -27,6 +27,7 @@ STAGE_KINDS["higher_learned"] = LearnedHigherStage
 __all__ = [
     "DivisiveNormalization",
     "GaborBank",
+    "GaborMixBank",
     "HigherStage",
     "LearnedHigherStage",
     "SpatialGaborBank",

@@ -99,3 +99,50 @@ def test_temporal_learning_moves_filters_toward_persistent_content():
     # Gabors' do (init ~0.74, learned ~0.97 on held-out pairs)
     a2, b2 = _persistent_pairs(seed=1)
     assert _frame_energy_corr(free, a2, b2) > _frame_energy_corr(init, a2, b2) + 0.1
+
+
+# ---- Phase 5d: Gabor mixing across sheet neighbors
+
+def test_gabor_mix_identity_equals_fixed_bank_and_neighbors():
+    from gtv.stages import GaborMixBank
+
+    x = _smooth_maps(3, 16, 16)  # 16 channels = a 4 x 4 input sheet
+    bank = GaborMixBank(16, 4, 0.25, mix_radius=1, offset=2)
+    assert torch.equal(bank(x), GaborBank(4, 1, 0.25)(x))
+    assert bank.nbr.shape == (16, 9) and (bank.nbr[:, 0] == torch.arange(16)).all()
+    assert set(bank.nbr[0].tolist()) == {0, 1, 3, 4, 5, 7, 12, 13, 15}  # 3 x 3 on the 4 x 4 torus
+    assert GaborMixBank(16, 4, 0.25, mix_radius=0, offset=0).weight.shape == (16, 4, 1, 4, 1, 2)
+
+
+def test_gabor_mix_routes_neighbor_channels_offsets_and_phase():
+    from gtv.stages import GaborMixBank
+
+    x = _smooth_maps(2, 16, 16)
+    bank = GaborMixBank(16, 4, 0.25, mix_radius=1, offset=2)
+    ref = GaborBank(4, 1, 0.25)(x).view(2, 16, 4, 16, 16)
+    j = int(bank.nbr[5, 3])
+    with torch.no_grad():
+        bank.weight.zero_()
+        bank.weight[5, 1, 3, 2, 0, 1] = 1.0  # output (5, 1) = i * (channel j, orientation 2)
+        bank.weight[6, 0, 0, 0, 3, 0] = 1.0  # output (6, 0) = own orientation 0, shifted by offsets[3]
+    y = bank(x).view(2, 16, 4, 16, 16)
+    assert torch.allclose(y[:, 5, 1], 1j * ref[:, j, 2], atol=1e-6)
+    dy, dx = bank.offsets[3]
+    assert dy == 2 and dx == 0  # content moves down 2 cells, zeros enter at the top
+    assert torch.allclose(y[:, 6, 0, 2:], ref[:, 6, 0, :-2], atol=1e-6)
+    assert y[:, 6, 0, :2].abs().max() == 0
+    share = bank.offdiagonal_share()
+    assert 0 < share["other_channels"] < 1 and 0 < share["shifted_positions"] < 1
+
+
+def test_ngd_optimizer_trains_mixing_and_tether_limits_it():
+    torch.manual_seed(0)
+    a, b = _persistent_pairs(n=32, c=4)
+    kw = dict(in_channels=4, sheet=4, radius=1, first_budget="all", bank="mix", mix_radius=1, offset=2)
+    fit = dict(n_steps=40, lr=0.01, batch_size=16, refit_every=20, optimizer="ngd",
+               tica_kw={"n_iter": 30, "polish_iter": 5})
+    loose, tight = LearnedHigherStage("V4", **kw), LearnedHigherStage("V4", **kw)
+    fit_stage_filters(loose, a, b, tether=0.0, **fit)
+    fit_stage_filters(tight, a, b, tether=1000.0, **fit)
+    assert 0 < tight.bank.drift() < loose.bank.drift()
+    assert torch.isfinite(loose.bank.weight).all()

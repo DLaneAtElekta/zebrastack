@@ -18,6 +18,8 @@ filters could lower the sparsity cost by shrinking or duplicating their
 outputs, and slowness alone favors uninformative low-frequency blobs.
 """
 
+import math
+
 import torch
 
 from gtv.temporal.coherence import bubbles_loss
@@ -44,18 +46,32 @@ def fit_stage_filters(
     border: int = 0,
     seed: int = 0,
     tica_kw: dict | None = None,
+    optimizer: str = "adam",
+    momentum: float = 0.9,
 ) -> dict[str, list[float]]:
     """Train ``stage.bank`` on input-map pairs ``x_t``, ``x_t1`` (N, C, H, W).
 
-    ``lr`` is relative to the initial kernels' rms (Adam steps are about
-    lr * rms per element). Whitening + TICA are refit (on both frames) every
+    ``lr`` is relative to ``bank.step_scale()`` (the initial kernels' rms for
+    spatial kernels, 1 for Gabor-mixing coefficients).
+
+    ``optimizer``: "adam" (Phase 5c) or "ngd", normalized gradient descent
+    with momentum and a cosine-decayed step: each step moves the weights by
+    lr * ||K_init|| along the momentum of unit-norm gradients. Unlike Adam it
+    keeps the gradient's relative sizes across elements, so weights with tiny
+    gradients (kernel periphery, unused mixing terms) barely move. Whitening + TICA are refit (on both frames) every
     ``refit_every`` steps, on the first ``refit_n`` pairs; the caller refits
     once more on its own data after.
     Returns the loss history by term and the filter drift."""
     tica_kw = tica_kw or {}
     gen = torch.Generator().manual_seed(seed)
     bank = stage.bank
-    opt = torch.optim.Adam([bank.weight], lr=lr * float(bank.weight_init.pow(2).mean().sqrt()))
+    if optimizer == "adam":
+        opt = torch.optim.Adam([bank.weight], lr=lr * bank.step_scale())
+    elif optimizer == "ngd":
+        step_len = lr * float(bank.weight_init.norm())
+        vel = torch.zeros_like(bank.weight)
+    else:
+        raise ValueError(f"unknown optimizer {optimizer!r}")
     both = torch.cat([x_t[:refit_n], x_t1[:refit_n]])
     hist = {"bubbles": [], "white": [], "tether": [], "drift": []}
     n_units = stage.tica.n_units
@@ -74,9 +90,15 @@ def fit_stage_filters(
         white = (s.T @ s / len(s) - eye).pow(2).sum() / n_units
         teth = bank.tether()
         loss = sparse + white_weight * white + tether * teth
-        opt.zero_grad()
-        loss.backward()
-        opt.step()
+        if optimizer == "adam":
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+        else:
+            (grad,) = torch.autograd.grad(loss, bank.weight)
+            with torch.no_grad():
+                vel.mul_(momentum).add_(grad / (grad.norm() + 1e-12))
+                bank.weight.sub_(step_len * 0.5 * (1 + math.cos(math.pi * step / n_steps)) * vel)
         for k, v in (("bubbles", sparse), ("white", white), ("tether", teth)):
             hist[k].append(float(v.detach()))
         hist["drift"].append(bank.drift())
