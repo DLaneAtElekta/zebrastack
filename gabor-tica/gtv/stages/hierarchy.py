@@ -63,23 +63,40 @@ class HigherStage(Stage):
         self.tica = TICA(sheet, sheet, radius, eps, whitener)
 
     def features(self, x: torch.Tensor, skips: list[torch.Tensor] | None = None,
-                 gain: torch.Tensor | None = None) -> torch.Tensor:
+                 gain: torch.Tensor | None = None, noise_T: float | None = None,
+                 generator: torch.Generator | None = None) -> torch.Tensor:
         """(B, C, H, W) [+ skip maps] -> (B, n_first + n_second, H/2, W/2).
 
         ``gain`` (block step [3], the thalamic attention field): multiplies the
         Gabor energies before divisive normalization, drive = A * E, so
         R = drive / (sigma + pool(drive)) (normalization model of attention).
         Shape (n_second,) for feature-only gain, or broadcastable to
-        (B, n_second, H, W) for spatial x feature gain."""
+        (B, n_second, H, W) for spatial x feature gain.
+
+        ``noise_T``: a response-noise bottleneck on everything the stage passes
+        up (smaller T = noisier). The gained energies get Poisson-like noise on
+        the normalized responses, R + sqrt(R / T) * N(0, 1) clamped at 0, before
+        the log (so attention's gain raises their signal-to-noise). The
+        first-order pass-through channels get Gaussian noise with standard
+        deviation (channel spread) / sqrt(T), so information cannot bypass
+        the bottleneck. Needs a fitted stage (the spread comes from its whitener)."""
         e = energy(self.bank(x))
         if gain is not None:
             e = e * (gain.view(1, -1, 1, 1) if gain.dim() == 1 else gain)
-        second = F.avg_pool2d(self.log(self.norm(e)), 2)
+        r = self.norm(e)
+        if noise_T is not None:
+            noise = torch.randn(r.shape, generator=generator)
+            r = (r + torch.sqrt(r.clamp(min=0) / noise_T) * noise).clamp(min=0)
+        second = F.avg_pool2d(self.log(r), 2)
         h, w = second.shape[-2:]
         first = [F.adaptive_avg_pool2d(x, (h, w))]
         for s in skips or []:
             first.append(F.adaptive_avg_pool2d(s, (h, w)))
-        return torch.cat(first + [second], 1)
+        first = torch.cat(first, 1)
+        if noise_T is not None:
+            spread = self.tica.whitener.parts[0].scale.view(1, -1, 1, 1)
+            first = first + spread / noise_T**0.5 * torch.randn(first.shape, generator=generator)
+        return torch.cat([first, second], 1)
 
     def fit(self, x: torch.Tensor, skips: list[torch.Tensor] | None = None, border: int = 0,
             chunk: int = 256, **tica_kw) -> list[float]:
@@ -92,8 +109,9 @@ class HigherStage(Stage):
         return self.tica.fit(vecs, self.dim, **tica_kw)
 
     def forward(self, x: torch.Tensor, skips: list[torch.Tensor] | None = None,
-                gain: torch.Tensor | None = None) -> torch.Tensor:
-        f = self.features(x, skips, gain)
+                gain: torch.Tensor | None = None, noise_T: float | None = None,
+                generator: torch.Generator | None = None) -> torch.Tensor:
+        f = self.features(x, skips, gain, noise_T, generator)
         m, b = self.tica.affine
         return torch.einsum("nd,bdhw->bnhw", m, f) + b.view(1, -1, 1, 1)
 

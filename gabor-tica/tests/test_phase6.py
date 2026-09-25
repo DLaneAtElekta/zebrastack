@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from gtv.generative import decode_down, fit_topdown
@@ -74,3 +75,20 @@ def test_feature_similarity_field_boosts_template_like_locations():
     corr = torch.corrcoef(torch.stack([favored.flatten(), field[:, 0].log().flatten()]))[0, 1]
     assert corr > 0.9
     assert torch.allclose(feature_similarity_field(st, x, templates, 0, 0.0), torch.ones_like(field))
+
+
+def test_response_noise_bottleneck():
+    st, x = _fitted_stage()
+    base = st.features(x)
+    g1, g2 = torch.Generator().manual_seed(1), torch.Generator().manual_seed(1)
+    noisy = st.features(x, noise_T=1.0, generator=g1)
+    assert torch.allclose(st.features(x, noise_T=1.0, generator=g2), noisy)  # same seed, same draws
+    quiet = st.features(x, noise_T=100.0, generator=torch.Generator().manual_seed(1))
+    sl = st.second_order_slice
+    err_noisy = (noisy[:, sl] - base[:, sl]).pow(2).mean()
+    err_quiet = (quiet[:, sl] - base[:, sl]).pow(2).mean()
+    assert err_quiet < err_noisy  # smaller T is noisier
+    # the pass-through channels are noisy too, so information cannot bypass the bottleneck
+    assert not torch.allclose(noisy[:, : st.n_first], base[:, : st.n_first])
+    first_err = (noisy[:, : st.n_first] - base[:, : st.n_first]).std(0).mean()
+    assert first_err == pytest.approx(float(st.tica.whitener.parts[0].scale.mean()), rel=0.3)

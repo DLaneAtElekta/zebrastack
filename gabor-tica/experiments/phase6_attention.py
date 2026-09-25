@@ -53,14 +53,17 @@ def _style(ax, title, xlabel="", ylabel=""):
         ax.spines[s].set_color(GRID)
 
 
-def detection(feats: dict, hit_rate: float = 0.8) -> dict:
+def detection(feats: dict, hit_rate: float = 0.8, train_feats: dict | None = None) -> dict:
     """d' (present vs absent) and false alarms (lookalike, absent) at the
-    threshold that catches ``hit_rate`` of present scenes; held-out, averaged."""
+    threshold that catches ``hit_rate`` of present scenes; held-out, averaged.
+    ``train_feats``: fit the readout (and its standardization) on these instead
+    (a fixed readout, e.g. trained without attention) and test on ``feats``."""
     out = {"dprime": [], "fa_lookalike": [], "fa_absent": []}
     n = len(feats["present"])
+    src = train_feats if train_feats is not None else feats
     for seed in SEEDS:
         tr, te = train_test_split(n, 0.6, torch.Generator().manual_seed(seed))
-        xtr = torch.cat([feats["present"][tr], feats["absent"][tr]])
+        xtr = torch.cat([src["present"][tr], src["absent"][tr]])
         ytr = torch.cat([torch.ones(len(tr)), torch.zeros(len(tr))]).long()
         mu, sd = xtr.mean(0), xtr.std(0) + 1e-6
         with torch.enable_grad():
@@ -78,6 +81,8 @@ def detection(feats: dict, hit_rate: float = 0.8) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=str(ROOT / "configs" / "phase6.yaml"))
+    ap.add_argument("--calibrate-noise", nargs="*", type=float, metavar="T",
+                    help="only report no-attention AIT d' for each response-noise scale T")
     args = ap.parse_args()
     c6 = load_config(args.config)
     c5 = load_config(ROOT / c6["base_config"])
@@ -111,23 +116,28 @@ def main() -> None:
                 s2.append(v2(a))
         return torch.cat(m1), torch.cat(s2)
 
-    def upper(m1, s2, gain=None, spatial=None):
+    noise_T = c6.get("response_noise_T")
+
+    def upper(m1, s2, gain=None, spatial=None, noise=None, noise_seed=0):
         """``gain``: feature-only (n_second,) gain at the attended stage;
-        ``spatial``: (target, beta) for a feature-similarity field computed there."""
+        ``spatial``: (target, beta) for a feature-similarity field computed there;
+        ``noise``: response-noise scale T at the attended stage (same draws for a
+        given ``noise_seed``, so conditions are compared on identical noise)."""
         maps = {"V1": m1, "V2": s2}
         prev = s2
+        ngen = torch.Generator().manual_seed(noise_seed)
         with torch.no_grad():
             for name in names:
                 sc = c5["stages"][name]
                 out_ = []
                 for i, pb in zip(range(0, len(prev), 256), prev.split(256)):
                     skips = [maps[sc["skip"]][i:i + 256]] if sc["skip"] else None
-                    g = None
+                    g, nt = None, None
                     if name == tk["attend_stage"]:
-                        g = gain
+                        g, nt = gain, noise
                         if spatial is not None:
                             g = feature_similarity_field(stack[name], pb, templates, spatial[0], spatial[1])
-                    out_.append(stack[name](pb, skips, g))
+                    out_.append(stack[name](pb, skips, g, nt, ngen))
                 prev = torch.cat(out_)
                 maps[name] = prev
         return maps
@@ -183,6 +193,13 @@ def main() -> None:
         st = stack[name]
         return F.adaptive_avg_pool2d(torch.cat([s, st.pooled_energy(s)], 1), 2).flatten(1)
 
+    if args.calibrate_noise is not None:
+        for T in args.calibrate_noise or [1.0, 3.0, 10.0, 30.0]:
+            maps = {k: upper(*lows[k], noise=T, noise_seed=i) for i, k in enumerate(KINDS)}
+            r = detection({k: readout(maps[k], "AIT") for k in KINDS})
+            print(f"noise T {T}: no-attention AIT d' {r['dprime']:.2f}", flush=True)
+        return
+
     conditions = {f"beta_{b}": (feature_gain(templates, tk["target"], b), None) for b in c6["betas"]}
     conditions["wrong_template"] = (feature_gain(templates, c6["wrong_template"], 1.0), None)
     for b in c6["betas"]:
@@ -190,15 +207,24 @@ def main() -> None:
             conditions[f"spatial_beta_{b}"] = (None, (tk["target"], b))
     conditions["spatial_wrong_template"] = (None, (c6["wrong_template"], 1.0))
     results = {}
+    reference = None  # AIT features without attention: the fixed readout's training data
+    if noise_T is not None:
+        results["noiseless_no_attention"] = {"AIT": detection(
+            {k: readout(upper(*lows[k]), "AIT") for k in KINDS})}
     for cname, (gain, spatial) in conditions.items():
-        maps = {k: upper(*lows[k], gain, spatial) for k in KINDS}
+        maps = {k: upper(*lows[k], gain, spatial, noise_T, i) for i, k in enumerate(KINDS)}
+        feats_ait = {k: readout(maps[k], "AIT") for k in KINDS}
+        if cname == "beta_0.0":
+            reference = feats_ait
         results[cname] = {stage: detection({k: readout(maps[k], stage) for k in KINDS})
                           for stage in ("V4", "AIT")}
+        results[cname]["AIT_fixed_readout"] = detection(feats_ait, train_feats=reference)
         if gain is not None:
             results[cname]["gain_range"] = [float(gain.min()), float(gain.max())]
         r = results[cname]["AIT"]
-        print(f"{cname}: AIT d' {r['dprime']:.2f} FA(lookalike) {r['fa_lookalike']:.2f} | "
-              f"V4 d' {results[cname]['V4']['dprime']:.2f}", flush=True)
+        print(f"{cname}: AIT d' {r['dprime']:.2f} FA(lookalike) {r['fa_lookalike']:.2f} | fixed-readout d' "
+              f"{results[cname]['AIT_fixed_readout']['dprime']:.2f} | V4 d' {results[cname]['V4']['dprime']:.2f}",
+              flush=True)
 
     # ---- tuning shift (Cukur et al.): V4 units' category tuning with vs without attention (beta 1)
     base_maps = upper(*low(x_val))
@@ -217,6 +243,7 @@ def main() -> None:
 
     ch = c6["checks"]
     base = results["beta_0.0"]["AIT"]["dprime"]
+    cond_names = [k for k in results if k != "noiseless_no_attention"]
     best_beta = max((k for k in results if k.startswith("beta_") and k != "beta_0.0"),
                     key=lambda k: results[k]["AIT"]["dprime"])
     best_spatial = max((k for k in results if k.startswith("spatial_beta_")),
@@ -229,6 +256,12 @@ def main() -> None:
         "spatial_attention_raises_dprime": sp_gain >= ch["spatial_min_dprime_gain"],
         "spatial_attention_is_target_specific": sp_gain - sp_wrong >= ch["spatial_min_specificity"],
     }
+    if "feature_min_specificity" in ch:
+        fe_wrong = results["wrong_template"]["AIT"]["dprime"] - base
+        checks["attention_is_target_specific"] = (results[best_beta]["AIT"]["dprime"] - base) - fe_wrong >= ch["feature_min_specificity"]
+    if noise_T is not None and "max_noisy_baseline_fraction" in ch:
+        checks["noise_bottleneck_costs_information"] = (
+            base <= ch["max_noisy_baseline_fraction"] * results["noiseless_no_attention"]["AIT"]["dprime"])
 
     # ---- figures
     fig, axes = plt.subplots(1, 3, figsize=(15, 3.5), gridspec_kw={"width_ratios": [1, 1.4, 1.4]})
@@ -240,10 +273,13 @@ def main() -> None:
     ax.set_ylabel("decoded template (AIT clamped)", fontsize=8, color=MUTED)
     ax.set_title(f"Top-down templates vs actual ({hits}/10 on the diagonal)", fontsize=9, color=INK, loc="left")
     fig.colorbar(im, ax=ax, fraction=0.04)
-    cn = list(results)
-    for ax, key, title in ((axes[1], "dprime", "Sneaker-in-clutter d′ (AIT readout)"),
-                           (axes[2], "fa_lookalike", "False alarms on sandal/boot scenes")):
-        vals = [results[c]["AIT"][key] for c in cn]
+    cn = cond_names
+    for ax, key, title in ((axes[1], "dprime", "Sneaker-in-clutter d′ (AIT readout, retrained)"),
+                           (axes[2], "dprime", "d′ with a fixed readout (trained without attention)")):
+        src = "AIT" if "retrained" in title else "AIT_fixed_readout"
+        vals = [results[c][src][key] for c in cn]
+        if "noiseless_no_attention" in results:
+            ax.axhline(results["noiseless_no_attention"]["AIT"]["dprime"], color=MUTED, linestyle="--", linewidth=1)
         cols = ["#6b6a63" if c == "beta_0.0" else "#eb6834" if "wrong" in c
                 else "#1baf7a" if c.startswith("spatial") else "#2a78d6" for c in cn]
         ax.bar(range(len(cn)), vals, color=cols, width=0.65)
