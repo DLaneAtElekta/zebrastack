@@ -53,7 +53,7 @@ gabor-tica/
 | 3 | Generative path, wake–sleep (or FE-1, Section 7) | ⚠️ 3a ✅; 3b stable but misses the R²-drop check by 0.002; 3c no gain |
 | FE-1 | Free energy replaces wake–sleep (Section 7) | ⚠️ 3 of 4 checks; loses linear second-order readout at the preset precision |
 | FE-2 | Learned per-channel precision | ⚠️ 2 of 4 checks; precision learns cleanly with V1 normalization, but doesn't fix the second-order readout |
-| FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; negative result with diagnosis |
+| FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; the task has no headroom (base reconstruction is already at the input ceiling) |
 | 4 | Temporal coherence | — |
 | 5 | V4 → PIT → AIT | — |
 | 6 | Thalamic gain (attention field) | — |
@@ -466,9 +466,45 @@ Findings:
   cannot use. This is FE-1's "map vs detector" split again.
 - Implication: FE-3's precision conditions should be re-scored with the
   reconstruction readout before concluding that context precision cannot act
-  as attention. And the latent code needs to stay detector-like under
-  inference (invariance from temporal coherence, or a readout stage that
+  as attention (done below). And the latent code needs to stay detector-like
+  under inference (invariance from temporal coherence, or a readout stage that
   re-applies the fixed second-order front end, as the reconstruction route does).
+
+### FE-3 re-scored with the reconstruction readout
+
+`fe3_context_precision.py` now reports both readouts, plus the reconstruction
+readout applied directly to the input scene V1 maps (the ceiling that closer
+reconstructions approach).
+
+| Condition | d′ via latents | d′ via reconstruction | False alarms (recon.) |
+|---|---|---|---|
+| **input V1 maps (no model)** | — | **2.20** | 0.18 |
+| encoder only | 1.60 | 2.09 | 0.24 |
+| 40 steps, base / FE-3 context / expected-signal | 1.59–1.60 | 2.12–2.14 | 0.19–0.20 |
+| converged, base | 0.46 | 2.26 | 0.20 |
+| converged, FE-3 context | 0.47 | 2.22 | 0.19 |
+| converged, expected-signal | 0.45 | 2.22 | 0.21 |
+| converged, fine +3 | 0.51 | 2.24 | 0.19 |
+| converged, fine −3 | 0.19 | **0.97** | 0.52 |
+
+Re-score check (declared before the re-run, same thresholds): FE-3 context
+precision raises reconstruction-readout d′ by ≥ 0.3 over base ❌ (−0.04); no
+extra false alarms ✅.
+
+- **The test is saturated, so it cannot show attention.** With base
+  precision, converged settling already reconstructs the target structure as
+  well as the input carries it (2.26 vs 2.20). No precision profile can add
+  information the input lacks, so there is no headroom for a gain.
+- **Precision does control what the model keeps.** Cutting fine-channel
+  precision halves detection (0.97) and more than doubles false alarms, while
+  every other profile stays at ceiling. Attention-as-precision here can
+  protect task-relevant information but has nothing to add in this regime.
+- To test attention as a *gain*, the task needs headroom between base
+  reconstruction and the input ceiling: weaker targets or heavier clutter,
+  where the decoder spends its capacity on the clutter and base-precision
+  reconstruction drops the target. The plan's Phase 6 gain model (attention
+  scaling the drive before normalization) is the other route: it changes the
+  representation itself, not only how faithfully the input is reconstructed.
 
 ## Related code elsewhere in this repo
 

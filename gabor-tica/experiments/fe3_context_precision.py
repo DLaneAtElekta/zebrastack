@@ -10,7 +10,11 @@ no retraining of the model:
                   on target-context scenes (FE-3 proper)
   settled_signal  + settling with expected-signal precision (comparator)
 Detection d' (target vs absent) and false alarms (distractors scored as
-targets) come from a linear readout of the posterior means.
+targets) come from two readouts: a linear readout of the posterior means, and
+the Phase 2 TICA readout of the reconstructed V1 maps (settling can move the
+target signal into latent coordinates the first readout cannot use; see
+fe3_prior_test.py). The ``input`` row applies the second readout to the actual
+scene V1 maps: the ceiling that closer reconstructions approach.
 
     python experiments/fe3_context_precision.py [--config configs/fe3.yaml] [--calibrate]
 """
@@ -36,6 +40,7 @@ from gtv.data import REPO_PHOTOS, load_grayscale, random_patches  # noqa: E402
 from gtv.generative import (  # noqa: E402
     AmortizedEncoder,
     ConvFactorAnalysis,
+    Recognition,
     TICAPrior,
     context_precision_fe,
     encoder_r2,
@@ -183,19 +188,32 @@ def main() -> None:
                   "converged_base": base_lp, "converged_fe3": fe3_lp, "converged_signal": signal_lp,
                   "converged_fine_up": base_lp + fine, "converged_fine_down": base_lp - fine}
 
+    tica_readout = Recognition(v2)  # the Phase 2 TICA stage, applied to V1 maps
+
+    def v1_feats(v1maps):
+        with torch.no_grad():
+            return features(tica_readout.mean_from_features(tica_readout.features_batched(v1maps)))
+
     results = {}
+    input_readout = detection({k: v1_feats(v) for k, v in sv.items()}, c3f["hit_rate_for_fa"])
     for name, lp in precisions.items():
         conv = name.startswith("converged")
         mus = {k: posterior(v, lp, conv) for k, v in sv.items()}
         results[name] = detection({k: features(m) for k, m in mus.items()}, c3f["hit_rate_for_fa"])
+        with torch.no_grad():
+            recon = {k: dec.to_v1(dec.mean(m)) for k, m in mus.items()}
+        results[name]["reconstruction_readout"] = detection({k: v1_feats(v) for k, v in recon.items()},
+                                                            c3f["hit_rate_for_fa"])
         with torch.no_grad():
             mu0, _ = enc(sv["target"])
         results[name]["latent_change_from_amortized"] = float((mus["target"] - mu0).norm() / mu0.norm())
         results[name]["natural_r2"] = encoder_r2(enc, dec, te) if lp is None else float(
             1 - ((dec.from_v1(te) - dec.mean(posterior(te, lp, conv)))[..., 4:-4, 4:-4].pow(2).mean()
                  / dec.from_v1(te)[..., 4:-4, 4:-4].var()))
-        print(f"{name}: d' {results[name]['dprime']:.2f}  FA(distractor) {results[name]['fa_distractor']:.2f}  "
-              f"FA(absent) {results[name]['fa_absent']:.2f}", flush=True)
+        rr = results[name]["reconstruction_readout"]
+        print(f"{name}: latent d' {results[name]['dprime']:.2f} FA {results[name]['fa_distractor']:.2f} | "
+              f"reconstruction d' {rr['dprime']:.2f} FA {rr['fa_distractor']:.2f}", flush=True)
+    print(f"input V1 maps (ceiling): d' {input_readout['dprime']:.2f} FA {input_readout['fa_distractor']:.2f}", flush=True)
 
     prof = {"base": base_lp.view(J, L), "fe3_context": fe3_lp.view(J, L), "expected_signal": signal_lp.view(J, L)}
     ch = c3f["checks"]
@@ -203,19 +221,29 @@ def main() -> None:
         "fe3_raises_dprime": results["settled_fe3"]["dprime"] - results["settled_base"]["dprime"] >= ch["min_dprime_gain"],
         "fe3_no_extra_false_alarms": results["settled_fe3"]["fa_distractor"] - results["settled_base"]["fa_distractor"]
         <= ch["max_fa_increase"],
+        "recon_fe3_raises_dprime": results["converged_fe3"]["reconstruction_readout"]["dprime"]
+        - results["converged_base"]["reconstruction_readout"]["dprime"] >= ch["recon_min_dprime_gain"],
+        "recon_fe3_no_extra_false_alarms": results["converged_fe3"]["reconstruction_readout"]["fa_distractor"]
+        - results["converged_base"]["reconstruction_readout"]["fa_distractor"] <= ch["recon_max_fa_increase"],
     }
     findings = {
+        "input_readout_ceiling": input_readout,
         "fe3_delta_log_precision_by_scale": (prof["fe3_context"] - prof["base"]).mean(1).tolist(),
         "signal_delta_log_precision_by_scale": (prof["expected_signal"] - prof["base"]).mean(1).tolist(),
         "signal_dprime_gain": results["settled_signal"]["dprime"] - results["settled_base"]["dprime"],
     }
 
     # ---- figures
-    fig, axes = plt.subplots(2, 1, figsize=(9.5, 6.0))
+    fig, axes = plt.subplots(2, 2, figsize=(14, 6.0))
     names = list(results)
-    for ax, key, title in zip(axes, ("dprime", "fa_distractor"),
-                              ("Detection d′ (target vs absent)", "False alarms on distractors (hit rate 0.8)")):
-        vals = [results[n][key] for n in names]
+    panels = [(axes[0, 0], "dprime", False, "d′, latent readout"),
+              (axes[1, 0], "fa_distractor", False, "False alarms on distractors, latent readout"),
+              (axes[0, 1], "dprime", True, "d′, reconstruction readout (dashed: input V1 maps)"),
+              (axes[1, 1], "fa_distractor", True, "False alarms, reconstruction readout (dashed: input)")]
+    for ax, key, via_recon, title in panels:
+        vals = [results[n]["reconstruction_readout"][key] if via_recon else results[n][key] for n in names]
+        if via_recon:
+            ax.axhline(input_readout[key], color=MUTED, linewidth=1, linestyle="--")
         ax.bar(range(len(names)), vals, color=[COLORS[n] for n in names], width=0.7)
         for i, v in enumerate(vals):
             ax.text(i, v, f"{v:.2f}", ha="center", va="bottom", fontsize=7, color=INK)

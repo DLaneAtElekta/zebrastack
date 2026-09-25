@@ -22,5 +22,9 @@ hit_rate_for_fa: 0.8       # false-alarm threshold: the score that catches this 
 checks:                    # declared before running
   min_dprime_gain: 0.3     # FE-3 context precision vs settling with base precision
   max_fa_increase: 0.05
+  # re-score (added after the prior test showed the latent readout hides the
+  # information): same thresholds, converged settling, reconstruction readout
+  recon_min_dprime_gain: 0.3
+  recon_max_fa_increase: 0.05
 
 output_dir: runs/fe3
