@@ -97,7 +97,8 @@ def main() -> None:
     for name, sc in c5["stages"].items():
         skip_src = sc["skip"]
         st = HigherStage(name, prev.shape[1], sc["sheet"], sc["radius"],
-                         skip_channels=below[skip_src].shape[1] if skip_src else 0)
+                         skip_channels=below[skip_src].shape[1] if skip_src else 0,
+                         first_budget=sc.get("first_budget"))
         skips = [below[skip_src]] if skip_src else None
         st.fit(prev, skips, border=sc["border"], seed=cfg["seed"], **c5["tica"])
         with torch.no_grad():
@@ -172,6 +173,34 @@ def main() -> None:
         print(f"{k}: accuracy {r['original']:.3f}  tolerance { {t: round(v, 2) for t, v in r['tolerance'].items()} }",
               flush=True)
 
+    # ---- fairer readout: the same PCA dimensionality for every stage, more training data
+    # (feature counts grow up the hierarchy, so the plain readout overfits more at the top)
+    mr = c5.get("matched_readout")
+    matched = {}
+    if mr:
+        x_big, y_big = load_fashion_mnist("train", mr["n_train"], size, seed=7)
+        maps_big = run(x_big)
+        n_rot = c5["transforms"].get("rotate_15deg")
+        for k in STAGE_ORDER:
+            ftr = readout(k, maps_big, x_big)
+            mu, sd = ftr.mean(0), ftr.std(0) + 1e-6
+            zt = (ftr - mu) / sd
+            _, _, vh = torch.linalg.svd(zt - zt.mean(0), full_matrices=False)
+            proj = vh[: min(mr["pca_dims"], vh.shape[0])].T
+            zp = zt @ proj
+            m2, s2 = zp.mean(0), zp.std(0) + 1e-6
+            with torch.enable_grad():
+                model = fit_logistic((zp - m2) / s2, y_big, len(CLASSES), l2=1e-3)
+
+            def acc(f):
+                with torch.no_grad():
+                    return float((model(((((f - mu) / sd) @ proj) - m2) / s2).argmax(1) == y_te).float().mean())
+
+            matched[k] = {"original": acc(feats_te[k])}
+            for tn in transformed:
+                matched[k][tn] = acc(transformed[tn][k])
+            print(f"matched readout {k}: {({t: round(v, 3) for t, v in matched[k].items()})}", flush=True)
+
     # ---- V4 vs V2 curvature coding
     cv = c5["curvature"]
     imgs, labels = [], []
@@ -231,6 +260,9 @@ def main() -> None:
         "ait_decoding_above_chance": decoding["AIT"]["original"] >= ch["min_ait_accuracy"],
         "ait_category_clusters": obs_c > clustering["category_null_p95"],
     }
+    if matched and "max_ait_drop_vs_v2" in ch:
+        checks["ait_no_decline_vs_v2_matched"] = matched["AIT"]["original"] >= matched["V2"]["original"] - ch["max_ait_drop_vs_v2"]
+        checks["ait_rotation_at_least_v2_matched"] = matched["AIT"]["rotate_15deg"] >= matched["V2"]["rotate_15deg"]
 
     # ---- figures
     fig, axes = plt.subplots(1, 2, figsize=(10, 3.2))
@@ -287,7 +319,7 @@ def main() -> None:
     fig.tight_layout()
     fig.savefig(out / "phase5_ait_sheet.png", dpi=120)
 
-    report = {"decoding": decoding, "curvature_decoding": curvature, "ait_clustering": clustering,
+    report = {"decoding": decoding, "matched_readout": matched, "curvature_decoding": curvature, "ait_clustering": clustering,
               "whitening_floored": whitening_floored,
               "checks": checks, "passed": all(checks.values())}
     (out / "report.json").write_text(json.dumps(report, indent=2))

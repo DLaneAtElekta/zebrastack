@@ -25,6 +25,7 @@ python experiments/fe3_context_precision.py  # FE-3 (V2-level analog): context p
 python experiments/fe3_prior_test.py         # is the per-location prior FE-3's bottleneck? (~10 min)
 python experiments/phase4_temporal.py        # Phase 4: temporal coherence on drift sequences (~6 min)
 python experiments/phase5_hierarchy.py       # Phase 5: V4 -> PIT -> AIT on Fashion-MNIST (~15 min; downloads data once)
+python experiments/phase5_hierarchy.py --config configs/phase5b.yaml  # Phase 5b: full pass-through (~25 min)
 python experiments/phase6_attention.py       # Phase 6: attention from top-down templates (needs the Phase 5 checkpoint; ~20 min)
 ```
 
@@ -58,7 +59,7 @@ gabor-tica/
 | FE-2 | Learned per-channel precision | ⚠️ 2 of 4 checks; precision learns cleanly with V1 normalization, but doesn't fix the second-order readout |
 | FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; no headroom exists at V1–V2 (reconstruction always matches the input ceiling) |
 | 4 | Temporal coherence | ❌ selectivity kept, but invariance gain +0.017 < 0.05; the fixed Design B front end leaves little for W to change |
-| 5 | V4 → PIT → AIT | ✅ recognition stack; AIT decoding 0.79, category clusters p < 0.001 (generative path and log-polar input deferred) |
+| 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance |
 | 6 | Thalamic gain (attention field) | ❌ templates work (8/10); feature gain is information-neutral here; spatial field +0.19 d′ (below the 0.3 bar) |
 | 7 | Expectation channel | — |
 | 8 | Context topography and routing (stretch) | — |
@@ -667,6 +668,58 @@ Findings and caveats:
   intermittently).
 - Deferred from the plan's Phase 5: log-polar input, and the generative
   decoders with wake–sleep (or free energy) for the full stack.
+
+## Phase 5b: keeping the pass-through (`configs/phase5b.yaml`)
+
+**Diagnosis first** (on the saved Phase 5 stack, decoding each stage's
+pre-whitening features vs its TICA outputs):
+- PCA truncation costs almost no accuracy (V4 0.868 → 0.865, PIT 0.857 → 0.855).
+- The plain readout overfits as feature counts grow (256 at V2 to 2,880 at
+  AIT, with 3,000 training images). With a **matched readout** (the same
+  256-dim PCA for every stage, 12,000 training images), V2, V4 and PIT decode
+  equally well (0.86–0.87), so most of the Phase 5 "decline" was the readout.
+- AIT's drop was real: the whitening gave each stage's first-order
+  (pass-through) channels only half the sheet. AIT kept 98 of PIT's 144
+  outputs, PIT 72 of 164, V4 50 of 88. Every stage discarded part of what it
+  received: the Phase 2 crowding problem, one level up.
+
+**Fix:** `HigherStage(first_budget="all")` keeps every pass-through dimension;
+sheets grow (V4 12 × 12, PIT 14 × 14, AIT 16 × 16) so second-order channels
+still get 80 / 52 / 60 dimensions. The skip connections are dropped: with a
+full pass-through they are redundant, and they caused the degenerate
+dimensions at PIT.
+
+| | Phase 5 | Phase 5b |
+|---|---|---|
+| AIT accuracy, plain readout | 0.791 | **0.841** |
+| AIT tolerance (shift / rotate / scale), plain readout | 0.82 / 0.66 / 0.89 | **0.87 / 0.73 / 0.88** |
+| AIT category neighbor agreement (null ≈ 0.12) | 0.26 | **0.35** |
+| AIT superordinate agreement (null ≈ 0.34) | 0.47 | **0.58** |
+
+Matched readout, Phase 5b (accuracy / shift / rotate / scale):
+
+| Stage | Original | Shift 6 px | Rotate 15° | Scale 0.85 |
+|---|---|---|---|---|
+| pixels | 0.816 | 0.185 | 0.397 | 0.612 |
+| V1 | 0.813 | 0.756 | 0.659 | 0.741 |
+| V2 | **0.877** | **0.799** | **0.694** | 0.771 |
+| V4 | 0.866 | 0.762 | 0.615 | **0.793** |
+| PIT | 0.867 | 0.785 | 0.618 | 0.764 |
+| AIT | 0.859 | 0.756 | 0.635 | 0.757 |
+
+Checks (declared before running; matched readout): AIT accuracy ≥ V2 − 0.01
+❌ (0.859 vs 0.877); AIT rotation ≥ V2 ❌ (0.635 vs 0.694). The original
+Phase 5 checks still pass.
+
+- With the full pass-through each stage contains the one below (TICA is an
+  invertible rotation of a lossless whitening), so information can no longer
+  decrease. The remaining matched-readout gap is dilution: higher stages have
+  more readout dimensions competing for the same 256 PCA slots.
+- The real limitation: **the upper stages add no invariance.** Their fixed
+  second-order channels (Gabors on 16 × 16, 8 × 8 and 4 × 4 maps) do not
+  make rotation easier to read out. Building invariance needs learned upper
+  filters, temporal coherence at learned stages, or explicit pooling over
+  transformations.
 
 ## Phase 6 results (`configs/phase6.yaml`)
 

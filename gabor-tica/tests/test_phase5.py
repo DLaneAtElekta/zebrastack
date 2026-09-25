@@ -33,3 +33,19 @@ def test_higher_stage_shapes_skips_and_fit():
     assert torch.allclose(s[3, :, 1, 2], st.tica(vec)[0], atol=1e-3)  # forward matches the fitted TICA
     with pytest.raises(ValueError):
         HigherStage("big", in_channels=2, sheet=10)
+
+
+def test_first_order_budget_all_keeps_the_pass_through():
+    torch.manual_seed(0)
+    st = HigherStage("V4", in_channels=6, sheet=4, radius=1, first_budget="all")  # 6 first + 10 second
+    x = torch.randn(60, 6, 8, 8)
+    st.fit(x, n_iter=20, polish_iter=5)
+    assert st.tica.whitener.parts[0].components.shape[0] == 6
+    # the stage's outputs determine its pooled inputs exactly (nothing of the pass-through is discarded)
+    import torch.nn.functional as F
+
+    s = st(x)
+    first_hat = st.features_from_outputs(s)[:, :6]
+    assert torch.allclose(first_hat, F.adaptive_avg_pool2d(x, 4), atol=1e-3)
+    with pytest.raises(ValueError):
+        HigherStage("V4", in_channels=16, sheet=4, first_budget="all")  # no room for second order

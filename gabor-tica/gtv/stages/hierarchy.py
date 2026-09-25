@@ -32,7 +32,13 @@ class HigherStage(Stage):
         norm_spatial_std: float = 1.0,
         log_eps: float = 1e-4,
         eps: float = 1e-3,
+        first_budget: int | str | None = None,
     ):
+        """``first_budget``: whitening dimensions for the first-order (+ skip)
+        channels, i.e. the pass-through of the stage below. None = half the
+        sheet (the Phase 5 default, which discards part of what the stage
+        received); "all" = every first-order channel, the rest of the sheet
+        going to second-order channels."""
         super().__init__(name)
         self.in_channels, self.skip_channels = in_channels, skip_channels
         self.bank = GaborBank(n_orientations, 1, freq)
@@ -44,7 +50,14 @@ class HigherStage(Stage):
         if dim > self.n_first + self.n_second:
             raise ValueError("sheet too large for the number of feature channels")
         # split the whitening budget between first-order (+ skip) and second-order channels
-        d1 = min(self.n_first, dim // 2)
+        if first_budget == "all":
+            d1 = self.n_first
+        elif first_budget is None:
+            d1 = min(self.n_first, dim // 2)
+        else:
+            d1 = int(first_budget)
+        if not 0 < d1 < dim:
+            raise ValueError(f"first-order budget {d1} must leave room on a {dim}-unit sheet")
         self.dim = dim
         whitener = GroupWhitener([(0, self.n_first, d1), (self.n_first, self.n_first + self.n_second, dim - d1)])
         self.tica = TICA(sheet, sheet, radius, eps, whitener)
@@ -111,7 +124,8 @@ def build_stack(stage_cfgs: dict, in_channels: dict[str, int]) -> dict[str, "Hig
     for name, sc in stage_cfgs.items():
         skip = sc.get("skip")
         stages[name] = HigherStage(name, prev, sc["sheet"], sc["radius"],
-                                   skip_channels=in_channels[skip] if skip else 0)
+                                   skip_channels=in_channels[skip] if skip else 0,
+                                   first_budget=sc.get("first_budget"))
         in_channels[name] = stages[name].tica.n_units
         prev = in_channels[name]
     return stages

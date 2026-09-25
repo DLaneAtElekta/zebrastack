@@ -1,0 +1,37 @@
+# Phase 5, variant b: the first-order pass-through keeps its full dimensionality
+# at every stage (Phase 5 gave it half the sheet and discarded the rest), sheets
+# grow to leave room for second-order channels, and the skips are dropped as
+# redundant (a full pass-through already carries the lower stage).
+# Run: python experiments/phase5_hierarchy.py --config configs/phase5b.yaml
+base_config: configs/phase2.yaml
+
+data:
+  n_fit: 4000
+  n_decode_train: 3000
+  n_decode_test: 2000
+
+stages:              # first-order budget "all": keep every pass-through dimension
+  V4:  {sheet: 12, radius: 1, skip: null, border: 1, first_budget: all}   # 64 first + 80 second
+  PIT: {sheet: 14, radius: 2, skip: null, border: 0, first_budget: all}   # 144 first + 52 second
+  AIT: {sheet: 16, radius: 2, skip: null, border: 0, first_budget: all}   # 196 first + 60 second
+tica: {n_iter: 300, polish_iter: 100}
+
+transforms:
+  shift_6px: [6.0, 0.0, 1.0]
+  rotate_15deg: [0.0, 15.0, 1.0]
+  scale_0.85: [0.0, 0.0, 0.85]
+
+matched_readout: {n_train: 12000, pca_dims: 256}   # same readout dimensionality for every stage
+
+curvature:
+  levels: [0.0, 0.05, 0.1]
+  per_class: 150
+
+checks:              # declared before running
+  min_ait_accuracy: 0.5
+  cluster_null_percentile: 95
+  n_shuffles: 2000
+  max_ait_drop_vs_v2: 0.01     # matched readout: AIT accuracy >= V2 - 0.01
+                               # and AIT rotation accuracy >= V2 (matched readout)
+
+output_dir: runs/phase5b
