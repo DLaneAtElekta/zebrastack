@@ -54,9 +54,18 @@ def tica_loss(s: torch.Tensor, h: torch.Tensor, eps: float = 1e-3) -> torch.Tens
 
 
 def symmetric_orthonormalize(w: torch.Tensor) -> torch.Tensor:
-    """W <- (W W^T)^{-1/2} W, the nearest matrix with orthonormal rows."""
-    u, _, vh = torch.linalg.svd(w, full_matrices=False)
-    return u @ vh
+    """W <- (W W^T)^{-1/2} W, the nearest matrix with orthonormal rows.
+
+    Computed in float64: with large sheets (e.g. 144 units, 5x5 pools) a
+    Riemannian step can leave W ill-conditioned enough that float32 SVD fails
+    to converge. If even that fails, fall back to a QR retraction (orthonormal
+    rows, though not the nearest such matrix)."""
+    try:
+        u, _, vh = torch.linalg.svd(w.double(), full_matrices=False)
+        return (u @ vh).to(w.dtype)
+    except torch.linalg.LinAlgError:
+        q, r = torch.linalg.qr(w.double().T)
+        return (q * torch.sign(torch.diagonal(r))).T.to(w.dtype)
 
 
 class FittedModule(nn.Module):
@@ -86,7 +95,11 @@ class Whitener(FittedModule):
         self.register_buffer("components", torch.empty(0))  # (dim, D), rows = PCs
         self.register_buffer("variances", torch.empty(0))  # (dim,)
 
-    def fit(self, x: torch.Tensor, dim: int) -> "Whitener":
+    def fit(self, x: torch.Tensor, dim: int, rel_floor: float = 1e-4) -> "Whitener":
+        """``rel_floor``: component variances are floored at this fraction of the
+        largest, so linearly dependent inputs (e.g. a skip connection spanned by
+        the stage's other channels) cannot produce infinite or NaN whitening.
+        ``n_floored`` records how many kept components were floored."""
         x = x.double()
         self.mean = x.mean(0)
         self.scale = x.std(0) + 1e-8
@@ -94,7 +107,10 @@ class Whitener(FittedModule):
         cov = xs.T @ xs / (len(xs) - 1)
         evals, evecs = torch.linalg.eigh(cov)
         order = evals.argsort(descending=True)[:dim]
-        self.variances = evals[order].float()
+        kept = evals[order]
+        floor = rel_floor * float(evals.max())
+        self.n_floored = int((kept < floor).sum())
+        self.variances = kept.clamp(min=floor).float()
         self.components = evecs[:, order].T.float()
         self.mean, self.scale = self.mean.float(), self.scale.float()
         return self

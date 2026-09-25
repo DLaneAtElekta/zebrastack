@@ -172,3 +172,12 @@ def test_fitted_v2_stage_round_trips_through_state_dict(fitted, tmp_path):
     b2.load_state_dict(ck["B"])
     assert torch.allclose(a2(maps), a(maps), atol=1e-5)
     assert torch.allclose(b2(maps), b(maps), atol=1e-5)
+
+
+def test_whitener_survives_linearly_dependent_inputs():
+    g = torch.Generator().manual_seed(0)
+    a = torch.randn(3000, 10, generator=g)
+    x = torch.cat([a, a[:, :4] @ torch.randn(4, 6, generator=g)], 1)  # 6 dependent columns
+    w = Whitener().fit(x, 14)
+    assert torch.isfinite(w.transform(x)).all()
+    assert w.n_floored == 4  # 14 requested, only 10 real dimensions

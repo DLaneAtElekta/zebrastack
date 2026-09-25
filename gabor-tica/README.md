@@ -24,6 +24,7 @@ python experiments/fe2_precision.py          # FE-2: learned per-channel precisi
 python experiments/fe3_context_precision.py  # FE-3 (V2-level analog): context precision, target in clutter (~15 min)
 python experiments/fe3_prior_test.py         # is the per-location prior FE-3's bottleneck? (~10 min)
 python experiments/phase4_temporal.py        # Phase 4: temporal coherence on drift sequences (~6 min)
+python experiments/phase5_hierarchy.py       # Phase 5: V4 -> PIT -> AIT on Fashion-MNIST (~15 min; downloads data once)
 ```
 
 ## Layout
@@ -36,7 +37,7 @@ gabor-tica/
     probes/            synthetic stimuli with known ground truth
     stages/            stage blocks (gabor, normalize, tica, block)
     viz/               filter atlas, topographic sheet map, fantasy grid
-    data/              natural images, video, category sets        (Phase 1+)
+    data/              natural photos, drift sequences, Fashion-MNIST (cached in data_cache/)
     generative/        decoder, latent priors, wake–sleep, fantasy diagnostics (Phase 3)
     temporal/          temporal coherence objectives for TICA       (Phase 4)
     thalamus/          gain, expectation, routing                  (Phases 6–8)
@@ -56,7 +57,7 @@ gabor-tica/
 | FE-2 | Learned per-channel precision | ⚠️ 2 of 4 checks; precision learns cleanly with V1 normalization, but doesn't fix the second-order readout |
 | FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; no headroom exists at V1–V2 (reconstruction always matches the input ceiling) |
 | 4 | Temporal coherence | ❌ selectivity kept, but invariance gain +0.017 < 0.05; the fixed Design B front end leaves little for W to change |
-| 5 | V4 → PIT → AIT | — |
+| 5 | V4 → PIT → AIT | ✅ recognition stack; AIT decoding 0.79, category clusters p < 0.001 (generative path and log-polar input deferred) |
 | 6 | Thalamic gain (attention field) | — |
 | 7 | Expectation channel | — |
 | 8 | Context topography and routing (stretch) | — |
@@ -594,6 +595,77 @@ Findings:
   learned (Design A's spatial filters over V1 maps, or the free-energy
   encoder), and longer sequences (pooling over more than two frames, larger
   drifts), where persistence is a stronger signal than one small step.
+
+## Phase 5 results (`configs/phase5.yaml`)
+
+**Categories:** Fashion-MNIST (10 clothing classes), downloaded once from the
+dataset's GitHub repository into `data_cache/` (git-ignored). CIFAR-10 and
+Hugging Face are blocked by this environment's network policy. Images are
+upsampled 2× and centered on the 64 × 64 canvas. The repo's `LittleCarDb1` is
+a die-cast car catalogue (96 models × ~7 paint jobs, one viewpoint): a
+possible later test of shape identity across colour, but too few images per
+class to learn categories from.
+
+**Stack:** V1 and the Design B V2 as validated on natural photos. V4, PIT
+and AIT (`HigherStage`) repeat the Design B block on the stage below's TICA
+output: fixed Gabors (4 orientations, 0.25 cycles per map cell) on every
+input channel, energy, normalization, log, 2× pooling, plus the pooled input
+channels, then group-whitened complete TICA. They are fitted greedily and
+without labels on 4,000 Fashion-MNIST images.
+
+| Stage | Map | Units (sheet) | TICA radius | Skip in |
+|---|---|---|---|---|
+| V4 | 8 × 8 | 100 (10 × 10) | 1 | V1 |
+| PIT | 4 × 4 | 144 (12 × 12) | 2 | V2 |
+| AIT | 2 × 2 | 196 (14 × 14) | 2 | — |
+
+**Results** (linear readout of 2×2-pooled [s, pooled energy]; 3,000 train /
+2,000 held-out test images; tolerance = accuracy on transformed test images
+with the decoder trained on originals):
+
+| Stage | Accuracy | Shift 6 px | Rotate 15° | Scale 0.85 |
+|---|---|---|---|---|
+| pixels | 0.814 | 0.36 | 0.50 | 0.66 |
+| V1 | 0.784 | 0.65 | 0.70 | 0.71 |
+| V2 | **0.863** | **0.78** | **0.74** | **0.79** |
+| V4 | 0.857 | 0.76 | 0.69 | 0.78 |
+| PIT | 0.843 | 0.72 | 0.61 | 0.76 |
+| AIT | 0.791 | 0.65 | 0.52 | 0.70 |
+
+**AIT sheet clustering:** each unit's preferred category comes from its own
+unpooled energy (pooled energy averages sheet neighbors, which would build
+clustering in). The fraction of sheet neighbors sharing a preferred category is
+**0.26** vs 0.11 for shuffled sheets (p < 0.0005, 2,000 shuffles); for
+superordinate groups (tops / footwear / other) it is **0.47** vs 0.33
+(p < 0.0005). The map shows footwear, trouser, T-shirt and bag regions.
+
+Checks (declared before running): AIT decoding ≥ 0.5 ✅ (0.79; chance 0.1);
+AIT category clusters above the 95th percentile of shuffled sheets ✅.
+
+Findings and caveats:
+- **Topographic category clusters emerge without labels.** TICA's
+  arrangement puts units with correlated energies together, and units driven
+  by the same category co-activate.
+- **But the stack above V2 adds neither category information nor
+  invariance; it loses some.** Accuracy peaks at V2 (0.86) and falls to
+  0.79 at AIT, below raw pixels. Rotation tolerance falls from 0.85 (V2) to
+  0.66 (AIT). Fixed Gabors on TICA outputs plus unsupervised greedy TICA do
+  not build more abstract features here. Each stage's complete TICA is only a
+  rotation of its whitened features, and the fixed front ends discard
+  information at each 2× pool. Candidates: learned (not fixed) upper-stage
+  filters, more units than a complete basis (RICA), temporal coherence at the
+  stages whose features are learned, and the plan's generative/top-down path.
+- **The curvature probe is saturated** (V1–PIT all ≈ 1.0 for three
+  curvature levels at any orientation), so it does not show V4 curvature
+  tuning. Harder probes (curvature with matched length and orientation
+  statistics, or Pasupathy–Connor shapes) are needed.
+- Two robustness fixes came out of this phase: the whitener floors
+  near-zero eigenvalues (a skip connection can be spanned by a stage's own
+  channels; `n_floored` reports it), and orthonormalization runs in float64
+  with a QR fallback (large sheets with 5 × 5 pools made float32 SVD fail
+  intermittently).
+- Deferred from the plan's Phase 5: log-polar input, and the generative
+  decoders with wake–sleep (or free energy) for the full stack.
 
 ## Related code elsewhere in this repo
 
