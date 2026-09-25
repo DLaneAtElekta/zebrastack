@@ -270,3 +270,57 @@ class VarianceFieldPrior(FittedModule):
         # center the modulation so exp(s / 2) has unit mean power per unit
         s = s - torch.log(torch.exp(s).mean((0, 2, 3), keepdim=True))
         return a + torch.exp(0.5 * s) * r + self.g.mean.view(1, -1, 1, 1)
+
+
+class SpectralGaussianPrior(FittedModule):
+    """Stationary Gaussian energy over latent maps, for use inside F:
+
+        -log p(z) = 1/2 sum_f Z(f)^H S(f)^-1 Z(f) / (h w)   (+ const)
+
+    with S(f) the (n x n) cross-spectral matrix of the latents, estimated as
+    the averaged periodogram of full maps on the latent grid (circulant
+    approximation). The zero-frequency bin holds the per-patch (global)
+    component, so this is the two-level global + local structure of Phase 3,
+    written as an energy. ``ridge`` (relative to the mean spectral power)
+    keeps S invertible.
+    """
+
+    def __init__(self, n: int, size: tuple[int, int], ridge: float = 1e-2):
+        super().__init__()
+        self.n, self.size, self.ridge = n, size, ridge
+        self.register_buffer("mean", torch.zeros(n))
+        self.register_buffer("inv_spec", torch.empty(0))  # (h, w, n, n) complex
+
+    def fit(self, z: torch.Tensor) -> "SpectralGaussianPrior":
+        h, w = self.size
+        self.mean = z.mean((0, 2, 3))
+        f = torch.fft.fft2((z - self.mean.view(1, -1, 1, 1)).to(torch.complex64), dim=(2, 3))
+        spec = torch.einsum("bihw,bjhw->hwij", f, f.conj()) / (z.shape[0] * h * w)
+        spec = 0.5 * (spec + spec.conj().transpose(-1, -2))
+        scale = spec.diagonal(dim1=-2, dim2=-1).real.mean()
+        eye = torch.eye(self.n, dtype=spec.dtype)
+        self.inv_spec = torch.linalg.inv(spec + self.ridge * scale * eye)
+        return self
+
+    def neg_log(self, z: torch.Tensor) -> torch.Tensor:
+        """(B, n, h, w) -> (B,)."""
+        h, w = self.size
+        f = torch.fft.fft2((z - self.mean.view(1, -1, 1, 1)).to(torch.complex64), dim=(2, 3))
+        q = torch.einsum("bihw,hwij,bjhw->b", f.conj(), self.inv_spec, f)
+        return 0.5 * q.real / (h * w)
+
+
+class SumPrior(nn.Module):
+    """Product of experts: -log p(z) = sum of the components' energies."""
+
+    def __init__(self, *priors: nn.Module):
+        super().__init__()
+        self.priors = nn.ModuleList(priors)
+
+    def neg_log(self, z: torch.Tensor) -> torch.Tensor:
+        return sum(p.neg_log(z) for p in self.priors)
+
+
+class NoPrior(nn.Module):
+    def neg_log(self, z: torch.Tensor) -> torch.Tensor:
+        return torch.zeros(z.shape[0])

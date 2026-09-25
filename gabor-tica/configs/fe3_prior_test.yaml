@@ -1,0 +1,11 @@
+# Is FE-3's per-location TICA prior the bottleneck for converged inference?
+# Run: python experiments/fe3_prior_test.py
+base_config: configs/fe3.yaml
+
+spectral_ridge: 0.01          # relative ridge on the spatial Gaussian prior's spectral matrices
+converged_settle_steps: 100
+
+checks:                       # declared before running
+  min_dprime_spatial: 1.2     # spatial prior recovers >= 2/3 of the drop (encoder 1.60, per-location 0.46)
+
+output_dir: runs/fe3_prior_test

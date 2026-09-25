@@ -22,6 +22,7 @@ python experiments/phase3_generative.py      # generative path + wake-sleep (~6 
 python experiments/fe1_free_energy.py        # Section 7 FE-1: one free-energy objective (~8 min)
 python experiments/fe2_precision.py          # FE-2: learned per-channel precision, V1 norm on/off (~8 min)
 python experiments/fe3_context_precision.py  # FE-3 (V2-level analog): context precision, target in clutter (~15 min)
+python experiments/fe3_prior_test.py         # is the per-location prior FE-3's bottleneck? (~10 min)
 ```
 
 ## Layout
@@ -423,6 +424,51 @@ Findings:
   must be strong enough that its F optimum keeps the structure the task
   depends on: spatially coupled latent priors (Phase 3 showed they matter),
   richer decoders, and invariance from temporal coherence (Phase 4).
+
+## FE-3 follow-up: is the per-location prior the bottleneck? (`configs/fe3_prior_test.yaml`)
+
+Same FE-2 model and FE-3 scenes. Converged (L-BFGS) settling with base
+precision under four latent priors:
+- the per-location TICA prior;
+- a **spatial Gaussian** prior (`SpectralGaussianPrior`): a stationary
+  Gaussian over the whole latent map with the full cross-spectral matrix,
+  fitted to encoder latents on natural images. Its zero-frequency bin carries
+  the per-patch component (Phase 3's global + local structure as an energy).
+  It rates real latent maps about 7× more probable than spatially shuffled ones;
+- both combined;
+- no prior at all (control).
+
+Detection is read two ways: from the latents (as in FE-3), and from the
+reconstructed V1 maps through the Phase 2 TICA stage.
+
+| Inference, prior | d′ from latents | d′ from reconstructed V1 maps | False alarms (recon. readout) | Latent change |
+|---|---|---|---|---|
+| encoder only | 1.60 | 2.09 | 0.24 | — |
+| converged, TICA per-location | 0.46 | **2.26** | 0.20 | 64% |
+| converged, spatial Gaussian | 0.92 | 2.19 | 0.18 | 37% |
+| converged, TICA + spatial | 0.52 | **2.27** | 0.19 | 56% |
+| converged, no prior | 1.16 | 2.13 | 0.21 | 108% |
+
+Check (declared before running): the spatial prior recovers d′ ≥ 1.2 from
+the latents ❌ (0.92).
+
+Findings:
+- **The per-location prior is not the bottleneck.** A spatially coupled prior
+  helps the latent readout (0.46 → 0.92) but recovers well under the
+  two-thirds criterion, and settling with no prior still loses a third of d′.
+- **Converged settling does not lose target information; it moves it.**
+  Read through the reconstructed V1 maps, every condition detects the target
+  better than the encoder's latents do (2.1–2.3 vs 1.60), and TICA-prior
+  settling gives the best detection and the fewest false alarms. FE-3's
+  "collapse" was a coordinate effect: settling shifts the target signal into
+  latent directions (along directions the decoder barely sees, and under the
+  prior's shrinkage) that a spatially averaged linear readout of the latents
+  cannot use. This is FE-1's "map vs detector" split again.
+- Implication: FE-3's precision conditions should be re-scored with the
+  reconstruction readout before concluding that context precision cannot act
+  as attention. And the latent code needs to stay detector-like under
+  inference (invariance from temporal coherence, or a readout stage that
+  re-applies the fixed second-order front end, as the reconstruction route does).
 
 ## Related code elsewhere in this repo
 

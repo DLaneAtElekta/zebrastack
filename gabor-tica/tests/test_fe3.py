@@ -109,3 +109,21 @@ def test_lbfgs_settling_goes_further_than_gradient_steps(model):
     mu_lb = settle_lbfgs(x, mu0[:, :, :, :].transpose(2, 3).transpose(2, 3), dec, prior, lp, n_steps=30)
     assert torch.isfinite(mu_lb).all()
     assert _f(x, mu_lb, dec, prior, lp) < f_gd
+
+
+def test_spectral_gaussian_prior_prefers_its_own_statistics():
+    from gtv.generative import NoPrior, SpectralGaussianPrior, SumPrior
+    from gtv.generative.priors import field_filter, gaussian_acf, sample_field
+
+    g = torch.Generator().manual_seed(0)
+    amp = field_filter(gaussian_acf(1.5, 5), (12, 12))
+    smooth = sample_field(128, 4, amp, g) + 0.5 * torch.randn(128, 4, 1, 1, generator=g)
+    prior = SpectralGaussianPrior(4, (12, 12)).fit(smooth)
+    fresh = sample_field(32, 4, amp, g) + 0.5 * torch.randn(32, 4, 1, 1, generator=g)
+    white = torch.randn(32, 4, 12, 12, generator=g) * fresh.std()
+    assert prior.neg_log(fresh).mean() < 0.5 * prior.neg_log(white).mean()
+    z = fresh.clone().requires_grad_(True)
+    prior.neg_log(z).sum().backward()
+    assert torch.isfinite(z.grad).all()
+    both = SumPrior(prior, NoPrior())
+    assert torch.allclose(both.neg_log(fresh), prior.neg_log(fresh))

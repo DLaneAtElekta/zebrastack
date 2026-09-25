@@ -21,7 +21,15 @@ from .free_energy import (
     residual_log_precision,
 )
 from .diagnostics import discriminability, map_statistics, statistic_gap
-from .priors import IIDGaussianPrior, SpatialGaussianPrior, StationaryGaussianPrior, VarianceFieldPrior
+from .priors import (
+    IIDGaussianPrior,
+    NoPrior,
+    SpatialGaussianPrior,
+    SpectralGaussianPrior,
+    StationaryGaussianPrior,
+    SumPrior,
+    VarianceFieldPrior,
+)
 from .wake_sleep import Recognition, fit_decoder, recon_r2, wake_sleep
 
 __all__ = [
@@ -34,7 +42,10 @@ __all__ = [
     "ConvFactorAnalysis",
     "IIDGaussianPrior",
     "Recognition",
+    "NoPrior",
     "SpatialGaussianPrior",
+    "SpectralGaussianPrior",
+    "SumPrior",
     "context_precision_fe",
     "expected_signal_precision",
     "residual_variance",
