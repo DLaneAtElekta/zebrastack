@@ -112,6 +112,9 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=str(ROOT / "configs" / "fe3.yaml"))
     ap.add_argument("--calibrate", action="store_true", help="only report baseline d' across target contrasts")
+    ap.add_argument("--calibrate-headroom", nargs="*", type=float, metavar="CONTRAST",
+                    help="only report, per target contrast, the input-ceiling d' and the reconstruction d' after "
+                         "converged settling with base precision (the headroom context precision could recover)")
     args = ap.parse_args()
     c3f = load_config(args.config)
     c2 = load_config(ROOT / c3f["base_config"])
@@ -168,6 +171,25 @@ def main() -> None:
                 sv = {k: v1(make_scenes(test_photos, sc["n_per_kind"], k, size, scc, gen)) for k in SCENE_KINDS}
             res = detection({k: features(posterior(v, None)) for k, v in sv.items()}, c3f["hit_rate_for_fa"])
             print(f"contrast {contrast}: amortized d' {res['dprime']:.2f}  FA(distractor) {res['fa_distractor']:.2f}", flush=True)
+        return
+
+    if args.calibrate_headroom is not None:
+        tica_cal = Recognition(v2)
+
+        def cal_feats(v1maps):
+            with torch.no_grad():
+                return features(tica_cal.mean_from_features(tica_cal.features_batched(v1maps)))
+
+        for contrast in args.calibrate_headroom or [0.2, 0.35, 0.5, 0.7]:
+            scc = {**sc, "target_contrast": contrast}
+            with torch.no_grad():
+                svc = {k: v1(make_scenes(test_photos, sc["n_per_kind"], k, size, scc, gen)) for k in SCENE_KINDS}
+            ceiling = detection({k: cal_feats(v) for k, v in svc.items()}, c3f["hit_rate_for_fa"])
+            with torch.no_grad():
+                recon = {k: dec.to_v1(dec.mean(posterior(v, base_lp, True))) for k, v in svc.items()}
+            base = detection({k: cal_feats(v) for k, v in recon.items()}, c3f["hit_rate_for_fa"])
+            print(f"contrast {contrast}: input ceiling d' {ceiling['dprime']:.2f} | converged base reconstruction "
+                  f"d' {base['dprime']:.2f} | headroom {ceiling['dprime'] - base['dprime']:+.2f}", flush=True)
         return
 
     # ---- scenes: held-out photos for testing; training photos for fitting context precision

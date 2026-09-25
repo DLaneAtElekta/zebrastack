@@ -53,7 +53,7 @@ gabor-tica/
 | 3 | Generative path, wake–sleep (or FE-1, Section 7) | ⚠️ 3a ✅; 3b stable but misses the R²-drop check by 0.002; 3c no gain |
 | FE-1 | Free energy replaces wake–sleep (Section 7) | ⚠️ 3 of 4 checks; loses linear second-order readout at the preset precision |
 | FE-2 | Learned per-channel precision | ⚠️ 2 of 4 checks; precision learns cleanly with V1 normalization, but doesn't fix the second-order readout |
-| FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; the task has no headroom (base reconstruction is already at the input ceiling) |
+| FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; no headroom exists at V1–V2 (reconstruction always matches the input ceiling) |
 | 4 | Temporal coherence | — |
 | 5 | V4 → PIT → AIT | — |
 | 6 | Thalamic gain (attention field) | — |
@@ -500,11 +500,39 @@ extra false alarms ✅.
   every other profile stays at ceiling. Attention-as-precision here can
   protect task-relevant information but has nothing to add in this regime.
 - To test attention as a *gain*, the task needs headroom between base
-  reconstruction and the input ceiling: weaker targets or heavier clutter,
-  where the decoder spends its capacity on the clutter and base-precision
-  reconstruction drops the target. The plan's Phase 6 gain model (attention
-  scaling the drive before normalization) is the other route: it changes the
-  representation itself, not only how faithfully the input is reconstructed.
+  reconstruction and the input ceiling. The plan's Phase 6 gain model
+  (attention scaling the drive before normalization) is the other route: it
+  changes the representation itself, not only how faithfully the input is
+  reconstructed.
+
+### Looking for headroom (`--calibrate-headroom`)
+
+Rule fixed before measuring: find a target contrast where base-precision
+reconstruction falls at least 0.3 d′ below the input ceiling (with the ceiling
+≥ 1.0), then rerun FE-3 there; if none exists, report that.
+
+| Target contrast | Input ceiling d′ | Converged base reconstruction d′ | Headroom |
+|---|---|---|---|
+| 0.15 | 0.52 | 0.55 | −0.02 |
+| 0.25 | 0.82 | 0.92 | −0.10 |
+| 0.35 | 1.18 | 1.26 | −0.08 |
+| 0.50 | 1.03 | 1.08 | −0.05 |
+
+**No headroom exists along this axis.** Lowering target contrast is the same
+axis as raising clutter, since the scene is clutter plus a scaled target.
+At every level the reconstruction matches or slightly beats the input: it acts
+as a mild denoiser, keeping the target structure and dropping some clutter.
+(The 0.35 vs 0.5 ordering is within split-to-split noise.) Detection is always
+limited by the input, never by the model, so context precision has nothing to
+recover and the FE-3 attention test cannot show a gain at V1–V2 on this task.
+
+The one regime where this model does lose target information is structural:
+envelopes above the latent grid's resolution (the V2 grid is 4 px, so
+modulations above ~0.125 cycles/px cannot be represented; compare the Phase 2
+envelope sweep). Precision cannot recover a representational limit, so that
+would not be a fair attention test either. Attention-as-precision needs a
+bottleneck that weighting can move: capacity limits in a deeper hierarchy
+(Phase 5), or the gain route of Phase 6.
 
 ## Related code elsewhere in this repo
 
