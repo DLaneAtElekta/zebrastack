@@ -141,6 +141,28 @@ class V2Stage(Stage):
             x = self._vectors(v1, n_per_image, border, gen)
         return self.tica.fit(x, self.dim, mode=self.tica_mode, seed=seed, **tica_kw)
 
+    def fit_temporal(self, v1_t: torch.Tensor, v1_t1: torch.Tensor, mode: str = "bubbles", weight: float = 1.0,
+                     border: int = 2, seed: int = 0, **kw) -> list[float]:
+        """Phase 4: fit on consecutive-frame V1 maps (design B). Feature vectors
+        at the same map location in both frames form the pairs; the whitener is
+        fitted on both frames. ``mode``: bubbles | coherence | still."""
+        from gtv.temporal import fit_temporal
+
+        if self.design != "B":
+            raise ValueError("temporal fitting is implemented for design B (per-location features)")
+
+        def vectors(v1):
+            with torch.no_grad():
+                f = self.front(v1)
+            f = f[:, :, border : f.shape[2] - border, border : f.shape[3] - border]
+            return f.permute(0, 2, 3, 1).reshape(-1, f.shape[1])
+
+        x_t, x_t1 = vectors(v1_t), vectors(v1_t1)
+        self.tica.whitener.fit(torch.cat([x_t, x_t1]), self.dim)
+        z_t, z_t1 = self.tica.whitener.transform(x_t), self.tica.whitener.transform(x_t1)
+        self.tica.weight, hist = fit_temporal(z_t, z_t1, self.tica.h, mode, weight, eps=self.tica.eps, seed=seed, **kw)
+        return hist
+
     def training_vectors(self, v1: torch.Tensor, n_per_image: int = 64, border: int = 2, seed: int = 0) -> torch.Tensor:
         return self._vectors(v1, n_per_image, border, torch.Generator().manual_seed(seed))
 

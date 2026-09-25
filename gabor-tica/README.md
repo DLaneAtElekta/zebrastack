@@ -23,6 +23,7 @@ python experiments/fe1_free_energy.py        # Section 7 FE-1: one free-energy o
 python experiments/fe2_precision.py          # FE-2: learned per-channel precision, V1 norm on/off (~8 min)
 python experiments/fe3_context_precision.py  # FE-3 (V2-level analog): context precision, target in clutter (~15 min)
 python experiments/fe3_prior_test.py         # is the per-location prior FE-3's bottleneck? (~10 min)
+python experiments/phase4_temporal.py        # Phase 4: temporal coherence on drift sequences (~6 min)
 ```
 
 ## Layout
@@ -37,7 +38,7 @@ gabor-tica/
     viz/               filter atlas, topographic sheet map, fantasy grid
     data/              natural images, video, category sets        (Phase 1+)
     generative/        decoder, latent priors, wake–sleep, fantasy diagnostics (Phase 3)
-    temporal/          temporal coherence / slowness               (Phase 4)
+    temporal/          temporal coherence objectives for TICA       (Phase 4)
     thalamus/          gain, expectation, routing                  (Phases 6–8)
   experiments/         one runnable script per phase check
   tests/
@@ -54,7 +55,7 @@ gabor-tica/
 | FE-1 | Free energy replaces wake–sleep (Section 7) | ⚠️ 3 of 4 checks; loses linear second-order readout at the preset precision |
 | FE-2 | Learned per-channel precision | ⚠️ 2 of 4 checks; precision learns cleanly with V1 normalization, but doesn't fix the second-order readout |
 | FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; no headroom exists at V1–V2 (reconstruction always matches the input ceiling) |
-| 4 | Temporal coherence | — |
+| 4 | Temporal coherence | ❌ selectivity kept, but invariance gain +0.017 < 0.05; the fixed Design B front end leaves little for W to change |
 | 5 | V4 → PIT → AIT | — |
 | 6 | Thalamic gain (attention field) | — |
 | 7 | Expectation channel | — |
@@ -533,6 +534,66 @@ envelope sweep). Precision cannot recover a representational limit, so that
 would not be a fair attention test either. Attention-as-precision needs a
 bottleneck that weighting can move: capacity limits in a deeper hierarchy
 (Phase 5), or the gain route of Phase 6.
+
+## Phase 4 results (`configs/phase4.yaml`)
+
+No video in the repo, so training uses the plan's alternative: **simulated
+drift** over the photos (`gtv.data.drift_pairs`). Each pair is a crop and the
+same crop shifted ≤ 2 px, rotated ≤ 3° and rescaled ≤ 3%. Design B V2 stages
+are fitted on 256 such pairs (36,864 location pairs), all from the same
+random start:
+- **still:** TICA on each frame independently;
+- **bubbles** (Hyvärinen, Hurri & Väyrynen): energy pooled over the sheet
+  neighborhood and both frames, √(h(s_t² + w·s_{t+1}²)), rewarding energy
+  that persists in the same pool;
+- **coherence** (Hurri & Hyvärinen): TICA minus λ·E[Σ s_i(t)² s_i(t+1)²],
+  temporal coherence of activity levels.
+
+The plan's "slowness penalty" was tried first and dropped. Linear slowness is
+provably inert with a complete orthonormal W (Σ E[(Δs)²] = trace(WCWᵀ) is
+rotation-invariant). An unnormalized penalty on pooled-energy differences is
+minimized by mixing sources, not by persistence. Both are covered by tests.
+The pre-declared sweep named slowness weights; activity coherence replaced
+it with weights scaled to its term, and the pass rule was unchanged.
+
+Invariance is the median, over units, of the correlation across 128 held-out
+patches between a unit's pooled energy for an image and for a transformed
+version (same location).
+
+| Model | Shift 2 px | Shift 4 px | Rotate 10° | Scale 1.1 | Mean | Drift coherence | Orientation selectivity | 2nd-order texture (0.016 / 0.0625) |
+|---|---|---|---|---|---|---|---|---|
+| still | 0.786 | 0.543 | 0.346 | 0.608 | 0.571 | 0.792 | 0.048 | 0.88 / 1.00 |
+| bubbles w = 1 | 0.795 | 0.560 | 0.375 | 0.623 | **0.588** | 0.791 | 0.042 | 0.89 / 1.00 |
+| bubbles w = 3 | 0.785 | 0.550 | 0.346 | 0.619 | 0.575 | 0.788 | 0.049 | 0.89 / 1.00 |
+| coherence 0.3 | 0.791 | 0.540 | 0.351 | 0.625 | 0.577 | 0.788 | 0.045 | 0.90 / 1.00 |
+| coherence 1 | 0.782 | 0.535 | 0.342 | 0.625 | 0.571 | 0.784 | 0.054 | 0.90 / 1.00 |
+| coherence 3 | 0.779 | 0.522 | 0.327 | 0.613 | 0.560 | 0.778 | 0.060 | 0.90 / 1.00 |
+
+First-order texture and junction decoding stay at 0.99–1.00 for every model.
+
+Check (declared before running): some temporal model improves mean invariance
+by ≥ 0.05 while keeping decoding (within 0.02) and orientation selectivity
+(≥ 0.8×) ❌. Selectivity is kept by every model; the best invariance gain is
++0.017 (bubbles w = 1).
+
+Findings:
+- **Temporal learning barely moves Design B.** Its invariance is mostly set
+  by the fixed front end: the pooled first-order channels are already highly
+  invariant (median 0.94), the second-order channels less so (0.71). Learning
+  only rotates channels within the 64 whitened dimensions.
+- **But there is headroom within that space.** The directions slowest under
+  the test transforms reach energy invariance 0.87 (median direction 0.54).
+  The temporal terms at these weights do not pull W there against TICA's
+  sparsity. More weight did not help either: bubbles w = 3 and coherence λ = 3
+  score below w = 1. Activity coherence also rewards heavy-tailed units, not
+  only persistent ones, so it is partly confounded with sparsity.
+- Orientation selectivity of Design B's pooled energies is low for every
+  model (≈ 0.05), since its units combine energy-like features. The selectivity
+  check therefore rests mainly on the probe decoding, which is at ceiling.
+- Where temporal coherence should matter more: stages whose *features* are
+  learned (Design A's spatial filters over V1 maps, or the free-energy
+  encoder), and longer sequences (pooling over more than two frames, larger
+  drifts), where persistence is a stronger signal than one small step.
 
 ## Related code elsewhere in this repo
 

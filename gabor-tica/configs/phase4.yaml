@@ -1,0 +1,33 @@
+# Phase 4: temporal coherence on simulated drift sequences.
+# Run: python experiments/phase4_temporal.py
+base_config: configs/phase2.yaml   # V1 and Design B settings
+
+data:
+  train_photos: 6
+  n_pairs: 256              # drift frame pairs from training photos
+  n_test_pairs: 128
+  n_invariance: 128         # held-out patches for the invariance tests
+  drift: {max_shift: 2.0, max_rot_deg: 3.0, max_log_scale: 0.03}
+
+fit: {n_iter: 300, polish_iter: 100}
+
+models:                     # name: [mode, weight]; all from the same random start and frames
+  still: [still, 0.0]
+  bubbles_w1: [bubbles, 1.0]
+  bubbles_w3: [bubbles, 3.0]
+  coherence_0.3: [coherence, 0.3]   # temporal coherence of activity levels (Hurri & Hyvarinen)
+  coherence_1: [coherence, 1.0]
+  coherence_3: [coherence, 3.0]
+
+invariance_tests:           # [shift_x px, rotation deg, scale]
+  shift_2px: [2.0, 0.0, 1.0]
+  shift_4px: [4.0, 0.0, 1.0]
+  rotate_10deg: [0.0, 10.0, 1.0]
+  scale_1.1: [0.0, 0.0, 1.1]
+
+checks:                     # declared before running; Phase 4 passes if ANY temporal model meets both
+  min_invariance_gain: 0.05          # mean over tests of the median unit invariance, vs still
+  max_decoding_drop: 0.02            # each probe, vs still
+  min_selectivity_ratio: 0.8         # median orientation selectivity, vs still
+
+output_dir: runs/phase4
