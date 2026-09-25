@@ -27,6 +27,7 @@ python experiments/phase4_temporal.py        # Phase 4: temporal coherence on dr
 python experiments/phase5_hierarchy.py       # Phase 5: V4 -> PIT -> AIT on Fashion-MNIST (~15 min; downloads data once)
 python experiments/phase5_hierarchy.py --config configs/phase5b.yaml  # Phase 5b: full pass-through (~25 min)
 python experiments/phase5c_learned_filters.py                         # Phase 5c: learned V4 filters, needs 5b (~70 min)
+python experiments/phase5d_gabor_mixing.py                            # Phase 5d: Gabor mixing across V2 neighbors, needs 5b (~2.5 h)
 python experiments/phase6_attention.py       # Phase 6: attention from top-down templates (needs the Phase 5 checkpoint; ~20 min)
 python experiments/phase6_attention.py --config configs/phase6b.yaml  # Phase 6 on the 5b stack, 600 scenes/kind (~60 min)
 python experiments/phase6_attention.py --config configs/phase6c.yaml  # Phase 6 with a response-noise bottleneck (~60 min)
@@ -62,7 +63,7 @@ gabor-tica/
 | FE-2 | Learned per-channel precision | ⚠️ 2 of 4 checks; precision learns cleanly with V1 normalization, but doesn't fix the second-order readout |
 | FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; no headroom exists at V1–V2 (reconstruction always matches the input ceiling) |
 | 4 | Temporal coherence | ❌ selectivity kept, but invariance gain +0.017 < 0.05; the fixed Design B front end leaves little for W to change |
-| 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance; 5c: learning V4's Gabor-initialized filters gives no reliable gain |
+| 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance; 5c: learning V4's Gabor-initialized filters gives no reliable gain; 5d: mixing Gabors across V2 sheet neighbors raises unit invariance (+0.06) but not readout tolerance |
 | 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar |
 | 7 | Expectation channel | — |
 | 8 | Context topography and routing (stretch) | — |
@@ -799,6 +800,72 @@ Findings:
   a smoother update (plain SGD, or kernels parameterized in a smooth basis)
   trained to convergence, and several refit seeds per variant so gains can be
   compared to the refit noise.
+
+## Phase 5d: V4 as learned mixtures of Gabors across V2 neighbors (`configs/phase5d.yaml`)
+
+Phase 5c's learned kernels could only re-tune within one V2 channel, and
+Adam put pixel noise into them. Here each V4 second-order filter is a
+`GaborMixBank` output: a complex-weighted sum of the **fixed** Gabor responses
+(4 orientations × 5 positions: center and ±2 V2 cells on each axis) of the V2
+channels within `mix_radius` of its own channel on the V2 TICA sheet.
+- **Smooth basis:** filters are combinations of Gabors, so they cannot pick
+  up pixel noise. A complex weight shifts phase and gain, and the output
+  stays analytic, so its energy stays phase-invariant.
+- **Exact identity start:** the mixing starts at the identity, where the
+  stage equals the fixed V4 exactly (max feature difference 0).
+- **Controls:** radius 0 mixes only within a channel (orientations and
+  offsets); radius 1 adds the 3 × 3 sheet neighbors, i.e. cross-feature
+  combinations; "still" is the sparsity-only objective.
+- **Training:** normalized gradient descent with momentum and a
+  cosine-decayed step, instead of Adam: it keeps the gradient's relative sizes,
+  so coefficients with no signal stay put. 1,200 steps; drift converges (0–1%
+  added in the last fifth).
+- **Refit noise:** every variant, and the learning-off baseline, is refit
+  with 3 TICA seeds. Gains are mean ± SE and must also exceed 2 SE.
+
+Gains vs learning off (0.867 original / 0.727 ± 0.005 transformed / 0.530 ± 0.001 invariance):
+
+| V4 variant | Drift | Change on other channels | Original | Transformed (mean of 3) | Invariance index |
+|---|---|---|---|---|---|
+| still, r = 0, τ = 0.1 | 0.50 | — | 0.867 | −0.008 ± 0.010 | −0.027 ± 0.014 |
+| bubbles, r = 0, τ = 0.1 | 0.51 | — | 0.863 | −0.006 ± 0.006 | −0.032 ± 0.006 |
+| still, r = 1, τ = 0.1 | 0.41 | 69% | 0.876 | −0.017 ± 0.007 | +0.040 ± 0.006 |
+| **bubbles, r = 1, τ = 0.1** | 0.42 | 69% | 0.874 | +0.006 ± 0.005 | **+0.058 ± 0.005** |
+| bubbles, r = 1, τ = 1 | 0.37 | 67% | 0.875 | −0.001 ± 0.007 | +0.039 ± 0.012 |
+| bubbles, r = 1, τ = 0.01 | 0.42 | 69% | 0.878 | +0.003 ± 0.008 | +0.043 ± 0.005 |
+
+(For reference: V2 invariance 0.713, rotation 0.694; bubbles r = 1 τ = 0.1
+rotation 0.638 vs 0.621 learning off.)
+
+Checks (declared before running): learning off equals the fixed V4 ✅;
+transformed-image accuracy ≥ +0.02 and > 2 SE ❌ (best +0.006); invariance
+index ≥ +0.05 and > 2 SE ✅ (+0.058, bubbles r = 1 τ = 0.1); the gain beats the
+same-setting still control by ≥ 0.01 and > 2 SE ✅ (+0.023 transformed
+accuracy); radius 1 beats radius 0 ✅.
+
+Findings:
+- **Combining neighboring V2 features makes V4 units more invariant;
+  re-tuning within a channel makes them less.** Every radius-1 variant raises
+  the invariance index by 0.04–0.06, with either objective. Both radius-0
+  variants lower it by about 0.03. So the gain comes from cross-feature
+  mixing, the step Phase 5c could not take, and the V2 sheet's topography is
+  what makes those neighbors worth mixing.
+- **The temporal term adds a little on top, at one tether.** Bubbles
+  vs still at r = 1, τ = 0.1: +0.018 invariance and +0.023 transformed
+  accuracy. At the other tethers bubbles matches still (0.039–0.043 vs 0.040),
+  so treat the temporal contribution as small.
+- **More invariant units do not yet make a more tolerant readout.**
+  Transformed-image accuracy is flat (−0.017 to +0.006), and still r = 1 is
+  more invariant yet less tolerant. The readout already combines V4 channels
+  linearly, and training transforms (≤ 4 px, ≤ 10°) are smaller than the test
+  transforms (6 px, 15°). Unit invariance and decoder tolerance measure
+  different things here.
+- **Cross-channel mixing slightly improves categorization:** original
+  accuracy 0.874–0.878 vs 0.867 (SE ≤ 0.002), now at V2's level (0.877).
+- V4 is still below V2 on every invariance measure (0.588 vs 0.713). Next
+  candidates: training transforms matching the test ones and longer sequences
+  (more than two frames), a wider mixing radius, and stacking the same learned
+  mixing at PIT and AIT.
 
 ## Phase 6 results (`configs/phase6.yaml`)
 
