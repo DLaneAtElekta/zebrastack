@@ -137,13 +137,19 @@ class HigherStage(Stage):
 
 def build_stack(stage_cfgs: dict, in_channels: dict[str, int]) -> dict[str, "HigherStage"]:
     """Instantiate V4/PIT/AIT from a Phase 5 ``stages`` config. ``in_channels``
-    maps "V1" and "V2" to their channel counts."""
+    maps "V1" and "V2" to their channel counts. ``learned_filters: true`` on a
+    stage gives it Gabor-initialized learnable kernels (``LearnedHigherStage``)."""
+    from .learned_gabor import LearnedHigherStage  # imports this module
+
     stages, prev = {}, in_channels["V2"]
     for name, sc in stage_cfgs.items():
         skip = sc.get("skip")
-        stages[name] = HigherStage(name, prev, sc["sheet"], sc["radius"],
-                                   skip_channels=in_channels[skip] if skip else 0,
-                                   first_budget=sc.get("first_budget"))
+        kw = {"skip_channels": in_channels[skip] if skip else 0, "first_budget": sc.get("first_budget")}
+        if sc.get("learned_filters"):
+            stages[name] = LearnedHigherStage(name, prev, sc["sheet"], sc["radius"],
+                                              kernel_size=sc.get("kernel_size", 15), **kw)
+        else:
+            stages[name] = HigherStage(name, prev, sc["sheet"], sc["radius"], **kw)
         in_channels[name] = stages[name].tica.n_units
         prev = in_channels[name]
     return stages

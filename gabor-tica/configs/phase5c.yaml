@@ -1,0 +1,41 @@
+# Phase 5c: Gabor-initialized, learnable V4 filters trained by temporal coherence.
+# V1 / V2 / fixed V4 are loaded from the Phase 5b run.
+# Run: python experiments/phase5c_learned_filters.py --config configs/phase5c.yaml
+phase5_config: configs/phase5b.yaml
+stack_checkpoint: runs/phase5b/phase5_stages.pt
+
+kernel_size: 15            # spatial kernels; matches the frequency-domain bank (energy corr 0.9999 on 16x16 maps)
+
+train:
+  n_pairs: 1000            # Fashion-MNIST images, each paired with a transformed copy
+  pair_seed: 11
+  max_shift: 4.0           # px per axis (1 V2 cell), uniform
+  max_rot_deg: 10.0
+  max_log_scale: 0.08
+  n_steps: 600
+  lr: 0.01                 # relative to the kernels' rms
+  batch_size: 32
+  refit_every: 200         # closed-form whitening + TICA refits during training
+  refit_n: 500
+  white_weight: 1.0
+
+temporal_weights: {still: 0.0, bubbles: 1.0}
+
+sweep:                     # tether: 0 = free filters
+  - {mode: still, tether: 1.0}
+  - {mode: bubbles, tether: 1.0}
+  - {mode: still, tether: 0.1}
+  - {mode: bubbles, tether: 0.1}
+  - {mode: still, tether: 0.01}
+  - {mode: bubbles, tether: 0.01}
+  - {mode: still, tether: 0.0}
+  - {mode: bubbles, tether: 0.0}
+
+checks:                    # declared before running
+  reproduce_tolerance: 0.01    # learning off vs fixed V4: matched readout, original and each transform
+  max_accuracy_drop: 0.01      # a learned variant counts only if original accuracy stays within this
+  min_tolerance_gain: 0.02     # best bubbles variant: mean matched accuracy on transformed images vs fixed V4
+  min_invariance_gain: 0.05    # some bubbles variant: mean unit invariance index vs fixed V4
+  min_temporal_margin: 0.01    # best bubbles variant's tolerance gain minus the same-tether still variant's
+
+output_dir: runs/phase5c
