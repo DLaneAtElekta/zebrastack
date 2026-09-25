@@ -27,6 +27,7 @@ python experiments/phase4_temporal.py        # Phase 4: temporal coherence on dr
 python experiments/phase5_hierarchy.py       # Phase 5: V4 -> PIT -> AIT on Fashion-MNIST (~15 min; downloads data once)
 python experiments/phase5_hierarchy.py --config configs/phase5b.yaml  # Phase 5b: full pass-through (~25 min)
 python experiments/phase6_attention.py       # Phase 6: attention from top-down templates (needs the Phase 5 checkpoint; ~20 min)
+python experiments/phase6_attention.py --config configs/phase6b.yaml  # Phase 6 on the 5b stack, 600 scenes/kind (~60 min)
 ```
 
 ## Layout
@@ -60,7 +61,7 @@ gabor-tica/
 | FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; no headroom exists at V1–V2 (reconstruction always matches the input ceiling) |
 | 4 | Temporal coherence | ❌ selectivity kept, but invariance gain +0.017 < 0.05; the fixed Design B front end leaves little for W to change |
 | 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance |
-| 6 | Thalamic gain (attention field) | ❌ templates work (8/10); feature gain is information-neutral here; spatial field +0.19 d′ (below the 0.3 bar) |
+| 6 | Thalamic gain (attention field) | ❌ no attention effect on detection, on either stack (6b: baseline d′ 0.85, all conditions within ±0.04); tuning shifts toward the target |
 | 7 | Expectation channel | — |
 | 8 | Context topography and routing (stretch) | — |
 
@@ -787,6 +788,44 @@ Findings:
 - The base detection is weak (AIT d′ 0.37), and the stack loses information
   above V2 (Phase 5). A stronger upper hierarchy is the precondition for a
   decisive attention test. Larger scene sets would also shrink the d′ noise.
+
+## Phase 6b: attention on the Phase 5b stack (`configs/phase6b.yaml`)
+
+Same experiment and checks as Phase 6, on the full pass-through stack, with
+600 scenes per kind (was 240) to reduce d′ noise.
+
+| Condition | AIT d′ | False alarms (lookalike) | V4 d′ |
+|---|---|---|---|
+| no attention | **0.85** (Phase 6: 0.37) | 0.69 | 0.74 |
+| feature gain β = 0.5 / 1 / 2 | 0.82 / 0.81 / 0.83 | 0.67 / 0.66 / 0.68 | 0.77 / 0.81 / 0.81 |
+| feature gain, wrong template (bag) | 0.84 | 0.67 | 0.75 |
+| spatial field β = 0.5 / 1 / 2 | 0.84 / 0.84 / 0.86 | 0.68 / 0.70 / 0.69 | 0.75 / 0.75 / 0.75 |
+| spatial field, wrong template (bag) | 0.83 | 0.68 | 0.74 |
+
+Checks (same as Phase 6): templates category-specific ❌ (7/10, median
+diagonal correlation 0.41; Phase 6 had 8/10 and 0.71); feature gain +0.3 ❌
+(−0.02 at best); spatial field +0.3 ❌ (+0.01); spatial specificity ❌.
+
+- **The stronger stack more than doubles baseline detection** (AIT d′ 0.37
+  → 0.85), and AIT now beats V4 (0.74). Keeping the pass-through makes the
+  upper stages useful for this task.
+- **No attention condition changes AIT detection** (all within ±0.04 of
+  baseline, and the wrong templates do as well). The Phase 6 spatial-field
+  gain of +0.19 does not replicate with 2.5× the scenes on this stack: it was
+  noise at the smaller sample, or specific to the old stack's weak baseline.
+- **Attention no longer raises false alarms** (0.66–0.70 vs 0.69).
+- **Templates are less category-specific** on this stack (7/10). The upper
+  stages carry the full pass-through, so their activity is dominated by
+  lower-level structure shared across categories, and the linear top-down
+  decoders recover less category-specific detail.
+- **The tuning shift is larger:** with β = 1 feature gain, 70% of V4 units
+  shift their relative preference toward sneakers (Phase 6: 59%). Attention
+  reshapes V4 tuning as expected, but in this noiseless network that does not
+  add information a retrained readout can use.
+- Conclusion for Phase 6: attention as gain needs a bottleneck after it
+  (noise, capacity or a fixed readout) to change detection. The model has no
+  such bottleneck. The next test of attention should add one, e.g. Poisson-like
+  response noise after normalization or a fixed, untrained readout.
 
 ## Related code elsewhere in this repo
 
