@@ -28,6 +28,7 @@ python experiments/phase5_hierarchy.py       # Phase 5: V4 -> PIT -> AIT on Fash
 python experiments/phase5_hierarchy.py --config configs/phase5b.yaml  # Phase 5b: full pass-through (~25 min)
 python experiments/phase6_attention.py       # Phase 6: attention from top-down templates (needs the Phase 5 checkpoint; ~20 min)
 python experiments/phase6_attention.py --config configs/phase6b.yaml  # Phase 6 on the 5b stack, 600 scenes/kind (~60 min)
+python experiments/phase6_attention.py --config configs/phase6c.yaml  # Phase 6 with a response-noise bottleneck (~60 min)
 ```
 
 ## Layout
@@ -61,7 +62,7 @@ gabor-tica/
 | FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; no headroom exists at V1–V2 (reconstruction always matches the input ceiling) |
 | 4 | Temporal coherence | ❌ selectivity kept, but invariance gain +0.017 < 0.05; the fixed Design B front end leaves little for W to change |
 | 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance |
-| 6 | Thalamic gain (attention field) | ❌ no attention effect on detection, on either stack (6b: baseline d′ 0.85, all conditions within ±0.04); tuning shifts toward the target |
+| 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar |
 | 7 | Expectation channel | — |
 | 8 | Context topography and routing (stretch) | — |
 
@@ -826,6 +827,59 @@ diagonal correlation 0.41; Phase 6 had 8/10 and 0.71); feature gain +0.3 ❌
   (noise, capacity or a fixed readout) to change detection. The model has no
   such bottleneck. The next test of attention should add one, e.g. Poisson-like
   response noise after normalization or a fixed, untrained readout.
+
+## Phase 6c: attention with a noise bottleneck (`configs/phase6c.yaml`)
+
+Phase 6b showed attention cannot change detection in a noiseless network with
+a retrained readout. Here a **response-noise bottleneck** is added at V4 (test
+time only; no weights refitted), and detection is also scored with a **fixed
+readout** trained once on the no-attention condition.
+
+- Noise on everything V4 passes up: Poisson-like on the normalized energies
+  after the attention gain and before the log, R + √(R/T)·ε, so gain raises
+  their signal-to-noise; Gaussian noise (spread/√T) on the first-order
+  pass-through. A first calibration with noise on the energies only showed
+  V2 information bypassing the bottleneck (T = 1 lowered d′ only from 0.85 to
+  0.67); this was fixed before any attention condition was run.
+- Calibration rule (fixed beforehand): the T whose no-attention AIT d′ is
+  closest to 0.5. Results: T = 1: 0.56, 3: 0.68, 10: 0.72, 30: 0.74, so T = 1.
+- Every condition sees identical noise draws (paired comparison).
+
+| Condition | AIT d′ (retrained) | AIT d′ (fixed readout) | V4 d′ | False alarms (lookalike) |
+|---|---|---|---|---|
+| noiseless, no attention | 0.85 | — | — | — |
+| noisy, no attention | 0.56 | 0.56 | 0.51 | 0.73 |
+| feature gain β = 0.5 / 1 / 2 | 0.62 / **0.64** / 0.63 | 0.58 / 0.59 / 0.60 | 0.53 / 0.57 / **0.63** | 0.72 / 0.72 / 0.72 |
+| feature gain, wrong template (bag) | 0.53 | 0.55 | 0.54 | 0.76 |
+| spatial field β = 0.5 / 1 / 2 | 0.55 / 0.54 / 0.52 | 0.56 / 0.56 / 0.57 | 0.50 / 0.50 / 0.50 | 0.74 / 0.76 / 0.74 |
+| spatial field, wrong template (bag) | 0.61 | 0.59 | 0.53 | 0.73 |
+
+Checks (declared before calibrating): noise costs information ✅ (0.56 ≤
+0.68); feature gain raises AIT d′ by ≥ 0.2 ❌ (+0.08); feature gain target-
+specific by ≥ 0.1 ✅ (+0.08 vs −0.03 for the wrong template); spatial field
++0.2 ❌ (−0.01); spatial specificity ❌; templates category-specific ❌ (7/10,
+as in 6b).
+
+Findings:
+- **With a bottleneck, feature gain has a small, target-specific effect.**
+  The right template raises d′ (+0.08 at AIT, +0.12 at V4 at β = 2); the wrong
+  template lowers it (−0.03) and raises false alarms (0.73 → 0.76). This is
+  the first target-specific attention effect in any run, but it is small and
+  the specificity margin (0.11) is only about twice the condition-to-condition
+  scatter (±0.05; compare the spatial conditions). Treat it as suggestive.
+- **Most of the gain is lost between V4 and AIT.** The effect is largest
+  where the gain acts (V4 +0.12) and shrinks upward (AIT +0.07 at β = 2). The
+  noisy energy channels are only part of what V4 passes up, and the noisy
+  pass-through, which attention cannot protect here, still carries the rest.
+- **A fixed readout gains less** (+0.03), as expected: gain changes the
+  features it was trained on.
+- **The spatial field does not help under noise** (all within ±0.05, and the
+  wrong template scores highest), so the Phase 6 +0.19 was not a real effect.
+- The plan's Phase 6 exit (d′ improves in clutter with no retraining) is not
+  met. To get a decisive effect: attention has to reach the channels that
+  carry the target through the bottleneck (gain on the pass-through too, or
+  at every stage), and category-specific templates need to be restored (7/10
+  on the 5b stack).
 
 ## Related code elsewhere in this repo
 
