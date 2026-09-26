@@ -37,6 +37,7 @@ python experiments/phase6_attention.py --config configs/phase6c.yaml  # Phase 6 
 python experiments/phase6_attention.py --config configs/phase6d.yaml  # 6c on the Phase 5f learned stack (~60 min)
 python experiments/phase6_attention.py --config configs/phase6e_fixed.yaml    # bottom-up template control, fixed stack
 python experiments/phase6_attention.py --config configs/phase6e_learned.yaml  # bottom-up template control, learned stack
+python experiments/phase6_attention.py --config configs/phase6f.yaml          # gain on the pass-through channels too
 ```
 
 ## Layout
@@ -70,7 +71,7 @@ gabor-tica/
 | FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; no headroom exists at V1–V2 (reconstruction always matches the input ceiling) |
 | 4 | Temporal coherence | ❌ selectivity kept, but invariance gain +0.017 < 0.05; the fixed Design B front end leaves little for W to change |
 | 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance; 5c: learning V4's Gabor-initialized filters gives no reliable gain; 5d: mixing Gabors across V2 sheet neighbors raises unit invariance (+0.06) but not readout tolerance; 5e: training on test-range transforms adds readout tolerance (+0.023), mostly from data diversity, not the temporal term; 5f: a learned mixing stack keeps V4's gain only for rotation and original accuracy at AIT |
-| 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar; on the learned stack (6d): no effect, templates degrade to 4/10; with ideal bottom-up templates (6e) at most +0.11, so templates are not the main limit |
+| 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar; on the learned stack (6d): no effect, templates degrade to 4/10; with ideal bottom-up templates (6e) at most +0.11, so templates are not the main limit; gain on the pass-through (6f) does not raise the ceiling |
 | 7 | Expectation channel | — |
 | 8 | Context topography and routing (stretch) | — |
 
@@ -1228,6 +1229,61 @@ Findings:
 - Next, from these results: extend the gain to the channels that carry the
   target through the bottleneck (the first-order pass-through), or apply it at
   every stage.
+
+## Phase 6f: attention gain on the pass-through channels (`configs/phase6f.yaml`)
+
+6e concluded that the energy-only gain has a low ceiling because the noisy
+pass-through channels, which attention did not touch, carry much of the
+target signal. Here V4's pass-through channels also get a gain:
+- **Gain:** exp(βz) on each channel's category-mean energy, from bottom-up
+  templates, applied before the channel's Gaussian bottleneck noise.
+- **Budget:** scaled to unit mean power, so boosting target channels costs
+  the others. Without a budget, gain on channels with additive noise would
+  buy signal-to-noise for free.
+- **Stack and templates:** the fixed stack with bottom-up templates (the
+  best 6e setting), noise T = 1.
+- **Controls:** the same noise draws as 6e (the energy-only conditions
+  reproduce 6e exactly), and a wrong template (bag) matched in strength at
+  β = 2.
+
+| Gain on | β = 1 | β = 2 | β = 4 | False alarms (β = 1) | Fixed-readout d′ (β = 1) |
+|---|---|---|---|---|---|
+| none | 0.56 | | | 0.73 | 0.56 |
+| energies only (6e) | 0.58 | **0.67** | — | 0.72 | 0.57 |
+| pass-through only | **0.65** | 0.47 | 0.34 | 0.79 | 0.47 |
+| both | 0.62 | 0.41 | 0.22 | 0.77 | 0.46 |
+| both, wrong template (bag) | — | 0.41 | — | 0.77 (β = 2) | 0.24 (β = 2) |
+
+(AIT d′, retrained readout. Pass-through gain ranges: β = 1: 0.04–3.1,
+β = 2: 0–4.5, β = 4: 0–6.1.)
+
+Checks: combined gain raises AIT d′ by ≥ 0.2 ❌ (best +0.09, pass-through
+β = 1). "Combined gain is target-specific" reports ✅, but it compares the best
+β (1) with a wrong template at β = 2, which is misleading. At matched
+strength (β = 2), right and wrong templates both give 0.41, so the
+combined gain is not target-specific.
+
+Findings:
+- **Gain on the pass-through does not raise the ceiling.** It helps a
+  retrained decoder a little at β = 1 (+0.09, like the energy gain's +0.11).
+  But it also raises false alarms on the lookalikes (0.73 → 0.79), and it
+  breaks a fixed readout (0.56 → 0.47): the boosted channels carry
+  shoe-general, not sneaker-specific, information.
+- **Stronger gain is harmful, and not because of the template.** Under the
+  power budget, β ≥ 2 drives most pass-through channels to near zero (gain
+  minimum 0.00), and the lost information outweighs the boosted channels'
+  gain. Right and wrong templates do equal damage.
+- **The energy gain is the better lever.** It is target-specific (6e) and
+  lowers false alarms, because divisive normalization bounds it and its
+  noise is signal-dependent. The pass-through has neither, so a gain there
+  is either free signal-to-noise (unbudgeted) or a zero-sum reshuffle
+  (budgeted).
+- Across Phase 6 (6 to 6f), attention's best effect in this architecture is
+  about +0.1 d′ at AIT under a noise bottleneck. The plan's exit (a clear
+  detection gain in clutter without retraining) is not met. What would
+  change that is architectural rather than a matter of gain settings: noise
+  and normalization on every channel a stage passes up (so gain acts as in
+  the normalization model everywhere), or attention at every stage.
 
 ## Related code elsewhere in this repo
 
