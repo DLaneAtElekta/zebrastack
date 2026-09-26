@@ -40,6 +40,7 @@ python experiments/phase6_attention.py --config configs/phase6e_learned.yaml  # 
 python experiments/phase6_attention.py --config configs/phase6f.yaml          # gain on the pass-through channels too
 python experiments/phase6_attention.py --config configs/phase7.yaml           # Phase 7: expectation channel (~60 min)
 python experiments/phase6_attention.py --config configs/phase7b.yaml          # Phase 7b: hierarchical expectation (~60 min)
+python experiments/phase6_attention.py --config configs/phase7c.yaml          # Phase 7c: 7b with informed readouts (~60 min)
 ```
 
 ## Layout
@@ -74,7 +75,7 @@ gabor-tica/
 | 4 | Temporal coherence | ❌ selectivity kept, but invariance gain +0.017 < 0.05; the fixed Design B front end leaves little for W to change |
 | 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance; 5c: learning V4's Gabor-initialized filters gives no reliable gain; 5d: mixing Gabors across V2 sheet neighbors raises unit invariance (+0.06) but not readout tolerance; 5e: training on test-range transforms adds readout tolerance (+0.023), mostly from data diversity, not the temporal term; 5f: a learned mixing stack keeps V4's gain only for rotation and original accuracy at AIT |
 | 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar; on the learned stack (6d): no effect, templates degrade to 4/10; with ideal bottom-up templates (6e) at most +0.11, so templates are not the main limit; gain on the pass-through (6f) does not raise the ceiling |
-| 7 | Expectation channel | ❌ predictive subtraction at V4 suppresses expected responses (Kok signature, weak) but does not lower false alarms (0.66 → 0.67–0.71); 7b hierarchical (footwear) expectation neither (0.68–0.70): false alarms are set by the readout (0.69 even noiseless) |
+| 7 | Expectation channel | ❌ predictive subtraction at V4 suppresses expected responses (Kok signature, weak) but does not lower false alarms (0.66 → 0.67–0.71); 7b hierarchical (footwear) expectation neither (0.68–0.70): false alarms are set by the readout (0.69 even noiseless); 7c with readouts that see lookalikes: no condition changes sneaker-vs-lookalike d′ (0.36–0.43; noiseless ceiling 0.53) |
 | 8 | Context topography and routing (stretch) | — |
 
 ## Phase 1 results (`configs/phase1.yaml`)
@@ -1412,6 +1413,55 @@ Findings:
   either a readout that is not retrained per condition (the fixed readout
   also stays at 0.55–0.62 d′ and similar false alarms), or an expectation
   that acts on everything the stage passes up.
+
+## Phase 7c: readouts that have seen lookalikes (`configs/phase7c.yaml`)
+
+The Phase 7b conditions, with three readouts per condition that measure what
+the representation separates rather than what a present/absent readout
+learned:
+- **Informed:** trained on present vs (absent + lookalike), retrained per
+  condition.
+- **Fixed informed:** trained once on the no-attention condition.
+- **d′ vs lookalike:** d′ between sneaker-scene and lookalike-scene scores.
+
+False alarms are on held-out scenes at an 80% hit rate.
+
+| Condition (AIT) | Informed: d′ (vs absent) | Informed: false alarms (lookalike) | Informed: d′ vs lookalike | Fixed informed: false alarms / d′ vs lookalike |
+|---|---|---|---|---|
+| noiseless, no attention | 0.65 | 0.63 | **0.53** | — |
+| no attention | 0.45 | 0.68 | 0.36 | 0.68 / 0.36 |
+| attention β = 1 | 0.46 | 0.67 | 0.38 | 0.66 / 0.39 |
+| attention β = 2 (reference) | 0.51 | 0.67 | 0.41 | 0.66 / 0.39 |
+| wrong template | 0.47 | 0.64 | 0.39 | 0.68 / 0.40 |
+| + footwear expectation α = 0.5 / 1 | 0.51 / 0.51 | 0.66 / 0.65 | 0.41 / 0.41 | 0.67 / 0.65, 0.39 / 0.37 |
+| + wrong-group expectation | 0.51 | 0.67 | 0.41 | 0.65 / 0.39 |
+| + sneaker expectation (projection) | 0.53 | 0.65 | 0.43 | 0.65 / 0.38 |
+| specific attention | 0.49 | 0.65 | 0.42 | 0.68 / 0.38 |
+| specific attention + footwear expectation α = 0.5 / 1 | 0.51 / 0.51 | 0.65 / 0.64 | 0.42 / 0.41 | 0.68 / 0.68, 0.38 / 0.36 |
+
+Checks (informed readout): expectation lowers lookalike false alarms by
+≥ 0.05 ❌ (0.67 → 0.64–0.66); expectation raises sneaker-vs-lookalike d′ by
+≥ 0.1 ❌ (at most +0.02).
+
+Findings:
+- **With a fair readout, nothing moves the discrimination.** Every
+  attention and expectation condition, including the controls, lands at
+  sneaker-vs-lookalike d′ 0.36–0.43 and false alarms 0.64–0.68. Attention
+  gives the largest step (+0.05 over no attention), expectation adds at most
+  +0.02, and all of it is inside the condition-to-condition scatter.
+- **The ceiling is low even without noise: d′ 0.53 vs lookalikes.** V4
+  separates isolated sneakers from sandals and boots at 0.94 accuracy
+  (Phase 7). In these scenes, though, the target is one of four objects, and
+  the readout sees AIT's 2 × 2-pooled map. By AIT the objects' features are
+  pooled together, so a sneaker scene and a sandal scene differ by a small
+  part of the representation. The bottleneck noise then takes it from 0.53
+  to 0.36, and gain or subtraction at V4 recovers little of that.
+- **Phase 6–7 conclusion:** in clutter, this hierarchy loses object identity
+  by pooling before attention or expectation can act on it. Both mechanisms
+  behave as designed (target-specific gain, Kok-style suppression), but
+  neither can separate what the pooled representation has merged. That is
+  the problem the plan's Phase 8 routing (selecting which region feeds the
+  next stage, object-centered processing) is meant to solve.
 
 ## Related code elsewhere in this repo
 
