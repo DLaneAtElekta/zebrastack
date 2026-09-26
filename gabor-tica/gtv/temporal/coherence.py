@@ -36,6 +36,17 @@ def bubbles_loss(s_t: torch.Tensor, s_t1: torch.Tensor, h: torch.Tensor, tempora
     return (torch.sqrt(e_t + temporal_weight * e_t1 + eps) + torch.sqrt(e_t1 + temporal_weight * e_t + eps)).sum(1).mean()
 
 
+def bubbles_seq_loss(frames: list[torch.Tensor], h: torch.Tensor, temporal_weight: float = 1.0,
+                     eps: float = 1e-3) -> torch.Tensor:
+    """Bubbles over a T-frame sequence: frame t's pool is
+    h(s_t^2) + w * mean over the other frames of h(s_t'^2), summed over frames.
+    For T = 2 this is ``bubbles_loss``."""
+    e = [s.pow(2) @ h.T for s in frames]
+    total = sum(e)
+    t = len(e)
+    return sum(torch.sqrt(ei + temporal_weight * (total - ei) / (t - 1) + eps) for ei in e).sum(1).mean()
+
+
 def coherence_loss(s_t: torch.Tensor, s_t1: torch.Tensor, h: torch.Tensor, lam: float = 1.0,
                    eps: float = 1e-3) -> torch.Tensor:
     """Still TICA on both frames minus lam * E[sum_i s_i(t)^2 s_i(t+1)^2]."""

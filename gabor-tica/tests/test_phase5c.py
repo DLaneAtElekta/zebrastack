@@ -146,3 +146,25 @@ def test_ngd_optimizer_trains_mixing_and_tether_limits_it():
     fit_stage_filters(tight, a, b, tether=1000.0, **fit)
     assert 0 < tight.bank.drift() < loose.bank.drift()
     assert torch.isfinite(loose.bank.weight).all()
+
+
+def test_sequence_bubbles_generalizes_pairs_and_rewards_persistence():
+    from gtv.stages.tica import torus_neighborhood
+    from gtv.temporal import bubbles_loss, bubbles_seq_loss
+
+    torch.manual_seed(0)
+    h = torus_neighborhood(3, 3, 1)
+    a, b = torch.randn(50, 9), torch.randn(50, 9)
+    assert torch.allclose(bubbles_seq_loss([a, b], h, 0.7), bubbles_loss(a, b, h, 0.7))
+    # energy that stays in the same units over 4 frames costs less than energy that hops
+    s = torch.randn(50, 9)
+    stay = [s * torch.randn(50, 1).abs() for _ in range(4)]
+    hop = [s[:, torch.randperm(9)] * torch.randn(50, 1).abs() for _ in range(4)]
+    far = torch.zeros(9, 9) + torch.eye(9)  # unit-only pools: hopping cannot hide in a shared pool
+    assert bubbles_seq_loss(stay, far, 1.0) < bubbles_seq_loss(hop, far, 1.0)
+    # sequences through the trainer: (N, T, C, H, W) with x_t1 None
+    st = LearnedHigherStage("V4", in_channels=4, sheet=4, radius=1, first_budget="all", bank="mix", mix_radius=1)
+    seq = _smooth_maps(12, 4, 16).unsqueeze(1).repeat(1, 3, 1, 1, 1)
+    hist = fit_stage_filters(st, seq, None, n_steps=3, batch_size=4, refit_every=3, refit_n=6,
+                             optimizer="ngd", lr=0.01, tica_kw={"n_iter": 5, "polish_iter": 1})
+    assert len(hist["bubbles"]) == 3 and st.bank.drift() > 0

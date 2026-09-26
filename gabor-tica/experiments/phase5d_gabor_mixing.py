@@ -14,6 +14,12 @@ Each trained variant is evaluated after ``len(refit_seeds)`` whitening + TICA
 refits, and so is the learning-off stage (the baseline), so every gain is
 compared with the refit noise (mean +- standard error over seeds).
 
+Phase 5e (``configs/phase5e.yaml``) uses the same script with training
+sequences whose transforms span the test range (``ranges``, per-variant
+``range`` and ``seq_len``: frame k of T is the original moved by k / (T - 1)
+of a random end transform) and with extrapolation transforms beyond it
+(``extra_transforms``, reported separately from the tested mean).
+
     python experiments/phase5d_gabor_mixing.py [--config configs/phase5d.yaml] [--quick]
 """
 
@@ -71,7 +77,7 @@ def main() -> None:
     tr, sweep, mr, seeds = dict(c["train"]), list(c["sweep"]), dict(c5["matched_readout"]), list(c["refit_seeds"])
     if args.quick:
         d.update(n_fit=200, n_decode_test=200)
-        tr.update(n_pairs=64, n_steps=6, refit_every=3, refit_n=64)
+        tr.update(n_pairs=64, n_steps=6, refit_every=3, refit_n=32)
         mr.update(n_train=400, pca_dims=32)
         tica_kw = {"n_iter": 10, "polish_iter": 2}
         sweep, seeds = sweep[:2], seeds[:2]
@@ -110,19 +116,37 @@ def main() -> None:
     x_te, y_te = load_fashion_mnist("test", d["n_decode_test"], size, seed=3)
     n = len(x_te)
     s2_te = {"original": v2_maps(x_te)}
-    for tname, (sx, rot, scl) in c5["transforms"].items():
+    extra = dict(c.get("extra_transforms") or {})
+    for tname, (sx, rot, scl) in {**c5["transforms"], **extra}.items():
         with torch.no_grad():
             xt = affine(x_te, torch.tensor([[sx, 0.0]]).expand(n, 2), torch.full((n,), rot), torch.full((n,), scl))
         s2_te[tname] = v2_maps(xt)
-    tnames = list(c5["transforms"])
-    g = torch.Generator().manual_seed(tr["pair_seed"])
+    tnames, enames = list(c5["transforms"]), list(extra)
     x_p, _ = load_fashion_mnist("train", tr["n_pairs"], size, seed=tr["pair_seed"])
     npr = len(x_p)
-    shift = (torch.rand(npr, 2, generator=g) * 2 - 1) * tr["max_shift"]
-    rot = (torch.rand(npr, generator=g) * 2 - 1) * tr["max_rot_deg"]
-    scale = torch.exp((torch.rand(npr, generator=g) * 2 - 1) * tr["max_log_scale"])
-    p_t, p_t1 = v2_maps(x_p), v2_maps(affine(x_p, shift, rot, scale))
-    print(f"data: fit {tuple(s2_fit.shape)}, readout train {len(s2_big)}, test {n} x {len(s2_te)}, pairs {npr}",
+    ranges = c.get("ranges") or {"default": {k: tr[k] for k in ("max_shift", "max_rot_deg", "max_log_scale")}}
+    seq_cache = {}
+
+    def sequences(range_name, t_len):
+        """(N, T, C, H, W) V2 maps: frame k is the image moved by k / (T - 1) of a
+        random end transform drawn from the range (T = 2: an image and its
+        transformed copy, as in Phase 5c/5d). The same draws for every T."""
+        key = (range_name, t_len)
+        if key not in seq_cache:
+            rg = ranges[range_name]
+            g = torch.Generator().manual_seed(tr["pair_seed"])
+            shift = (torch.rand(npr, 2, generator=g) * 2 - 1) * rg["max_shift"]
+            rot = (torch.rand(npr, generator=g) * 2 - 1) * rg["max_rot_deg"]
+            log_s = (torch.rand(npr, generator=g) * 2 - 1) * rg["max_log_scale"]
+            frames = [v2_maps(x_p)]
+            for k in range(1, t_len):
+                a = k / (t_len - 1)
+                with torch.no_grad():
+                    frames.append(v2_maps(affine(x_p, a * shift, a * rot, torch.exp(a * log_s))))
+            seq_cache[key] = torch.stack(frames, 1)
+        return seq_cache[key]
+
+    print(f"data: fit {tuple(s2_fit.shape)}, readout train {len(s2_big)}, test {n} x {len(s2_te)}, sequences {npr}",
           flush=True)
 
     # ---- evaluation (as Phase 5c)
@@ -145,7 +169,7 @@ def main() -> None:
     def invariance(pe):
         a = pe["original"]
         res = {}
-        for t in tnames:
+        for t in tnames + enames:
             b = pe[t]
             az, bz = a - a.mean(0), b - b.mean(0)
             res[t] = float(((az * bz).sum(0) / (az.norm(dim=0) * bz.norm(dim=0) + 1e-8)).median())
@@ -155,8 +179,12 @@ def main() -> None:
         outs_big, outs_te = run(stage, s2_big), {k: run(stage, v) for k, v in s2_te.items()}
         acc = matched(readout(stage, outs_big), {k: readout(stage, v) for k, v in outs_te.items()})
         inv = invariance({k: F.adaptive_avg_pool2d(stage.pooled_energy(v), 2).flatten(1) for k, v in outs_te.items()})
-        return {"matched": acc, "mean_transformed": sum(acc[t] for t in tnames) / len(tnames),
-                "invariance": inv, "mean_invariance": sum(inv.values()) / len(inv)}
+        r = {"matched": acc, "mean_transformed": sum(acc[t] for t in tnames) / len(tnames),
+             "invariance": inv, "mean_invariance": sum(inv[t] for t in tnames) / len(tnames)}
+        if enames:
+            r["mean_extrapolation"] = sum(acc[t] for t in enames) / len(enames)
+            r["mean_extrapolation_invariance"] = sum(inv[t] for t in enames) / len(enames)
+        return r
 
     def evaluate_seeds(stage, label):
         """Refit whitening + TICA with each seed (filters unchanged) and evaluate."""
@@ -165,14 +193,17 @@ def main() -> None:
             stage.fit(s2_fit, border=sc["border"], seed=s, **tica_kw)
             per.append(evaluate_once(stage))
         r = {"per_seed": per}
-        for key in ("mean_transformed", "mean_invariance"):
-            r[key], r[key + "_se"] = _mean_se([p[key] for p in per])
-        for k in ["original"] + tnames:
+        for key in ("mean_transformed", "mean_invariance", "mean_extrapolation", "mean_extrapolation_invariance"):
+            if key in per[0]:
+                r[key], r[key + "_se"] = _mean_se([p[key] for p in per])
+        for k in ["original"] + tnames + enames:
             r[k], r[k + "_se"] = _mean_se([p["matched"][k] for p in per])
         print(f"{label}: original {r['original']:.3f}±{r['original_se']:.3f}; "
               + "; ".join(f"{t} {r[t]:.3f}" for t in tnames)
               + f"; mean transformed {r['mean_transformed']:.3f}±{r['mean_transformed_se']:.3f}; "
-              f"invariance {r['mean_invariance']:.3f}±{r['mean_invariance_se']:.3f}", flush=True)
+              f"invariance {r['mean_invariance']:.3f}±{r['mean_invariance_se']:.3f}"
+              + (f"; extrapolation {r['mean_extrapolation']:.3f}±{r['mean_extrapolation_se']:.3f} "
+                 f"(invariance {r['mean_extrapolation_invariance']:.3f})" if enames else ""), flush=True)
         return r
 
     ref = evaluate_once(fixed)
@@ -197,9 +228,13 @@ def main() -> None:
     # ---- trained variants
     histories = {}
     for v in sweep:
+        t_len, rname = v.get("seq_len", 2), v.get("range", next(iter(ranges)))
         label = f"{v['mode']}_r{v['mix_radius']}_tether{v['tether']:g}"
+        if "range" in v or "seq_len" in v:
+            label += f"_{rname}_T{t_len}"
         st = new_stage(v)
-        hist = fit_stage_filters(st, p_t, p_t1, temporal_weight=c["temporal_weights"][v["mode"]],
+        hist = fit_stage_filters(st, sequences(rname, t_len), None,
+                                 temporal_weight=v.get("temporal_weight", c["temporal_weights"][v["mode"]]),
                                  tether=v["tether"], white_weight=tr["white_weight"], n_steps=tr["n_steps"],
                                  lr=tr["lr"], batch_size=tr["batch_size"], refit_every=tr["refit_every"],
                                  refit_n=tr["refit_n"], border=sc["border"], seed=seeds[0], tica_kw=tica_kw,
@@ -207,7 +242,8 @@ def main() -> None:
         r = evaluate_seeds(st, f"V4 {label} (drift {hist['drift'][-1]:.3f})")
         dr = hist["drift"]
         tail = max(1, len(dr) // 5)
-        r.update(mode=v["mode"], mix_radius=v["mix_radius"], tether=v["tether"], drift=dr[-1],
+        r.update(mode=v["mode"], mix_radius=v["mix_radius"], tether=v["tether"], drift=dr[-1], range=rname,
+                 seq_len=t_len,
                  drift_last_fifth_share=(dr[-1] - dr[-tail - 1]) / (dr[-1] + 1e-12),
                  change_share=st.bank.offdiagonal_share(),
                  final_losses={k: hist[k][-1] for k in ("bubbles", "white", "tether")})
@@ -247,7 +283,17 @@ def main() -> None:
     r1 = [k for k in keep if learned[k]["mix_radius"] > 0]
     if r0 and r1:
         checks["mixing_beats_per_channel"] = max(tol[k][0] for k in r1) > max(tol[k][0] for k in r0)
+    if "reference_tolerance_gain" in ch:
+        wide = [k for k in bub if learned[k]["range"] != ch["reference_range"]]
+        if wide:
+            checks["matched_range_beats_reference"] = (
+                max(tol[k][0] for k in wide) >= ch["reference_tolerance_gain"] + ch["min_range_margin"])
+    long_, pairs = [k for k in bub if learned[k]["seq_len"] > 2], [k for k in bub if learned[k]["seq_len"] == 2]
+    if long_ and pairs:
+        checks["sequences_beat_pairs"] = max(tol[k][0] for k in long_) > max(tol[k][0] for k in pairs)
     summary = {"tolerance_gain": tol, "invariance_gain": inv, "best_bubbles_variant": best}
+    if enames:
+        summary["extrapolation_gain"] = {k: gain(k, "mean_extrapolation") for k in learned}
     print(json.dumps(summary, indent=2), flush=True)
 
     # ---- figures
@@ -256,7 +302,9 @@ def main() -> None:
         fig, axes = plt.subplots(1, 3, figsize=(14, 3.6))
         xs_ = range(len(labels))
         cols = [MODE_COLORS[learned[k]["mode"]] for k in labels]
-        short = [f"{learned[k]['mode']}\nr={learned[k]['mix_radius']} τ={learned[k]['tether']:g}" for k in labels]
+        short = [f"{learned[k]['mode']}\nr={learned[k]['mix_radius']} τ={learned[k]['tether']:g}"
+                 + (f"\n{learned[k]['range']} T={learned[k]['seq_len']}" if len(ranges) > 1 or "seq_len" in str(sweep) else "")
+                 for k in labels]
         for ax, gains, title, bar in ((axes[0], tol, "Transformed-image accuracy vs learning off", ch["min_tolerance_gain"]),
                                       (axes[1], inv, "Unit invariance index vs learning off", ch["min_invariance_gain"])):
             ax.bar(xs_, [gains[k][0] for k in labels], yerr=[ch["n_se"] * gains[k][1] for k in labels],
@@ -277,13 +325,13 @@ def main() -> None:
         ax.legend(fontsize=7, frameon=False, labelcolor=INK)
         _style(ax, "Mixing drift from the identity", "step", "‖A − I‖ / ‖I‖")
         fig.tight_layout()
-        fig.savefig(out / "phase5d_sweep.png", dpi=120)
+        fig.savefig(out / f"{Path(c['output_dir']).name}_sweep.png", dpi=120)
 
     report = {"results": results, "summary": summary, "checks": checks, "passed": all(checks.values()),
               "refit_seeds": seeds}
     (out / "report.json").write_text(json.dumps(report, indent=2))
     print(json.dumps({"checks": checks}, indent=2))
-    print(f"Phase 5d {'PASSED' if report['passed'] else 'FAILED'}; figures in {out}")
+    print(f"{Path(c['output_dir']).name} {'PASSED' if report['passed'] else 'FAILED'}; figures in {out}")
 
 
 if __name__ == "__main__":

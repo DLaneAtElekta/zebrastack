@@ -7,7 +7,7 @@ Modules:
                    Gabor-initialized filters (LearnedHigherStage)
 """
 
-from .coherence import bubbles_loss, coherence_loss, fit_temporal
+from .coherence import bubbles_loss, bubbles_seq_loss, coherence_loss, fit_temporal
 from .filters import fit_stage_filters
 
-__all__ = ["bubbles_loss", "coherence_loss", "fit_temporal", "fit_stage_filters"]
+__all__ = ["bubbles_loss", "bubbles_seq_loss", "coherence_loss", "fit_temporal", "fit_stage_filters"]

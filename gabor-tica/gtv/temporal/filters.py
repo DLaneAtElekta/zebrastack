@@ -22,7 +22,7 @@ import math
 
 import torch
 
-from gtv.temporal.coherence import bubbles_loss
+from gtv.temporal.coherence import bubbles_seq_loss
 
 
 def _vectors(f: torch.Tensor, border: int) -> torch.Tensor:
@@ -34,7 +34,7 @@ def _vectors(f: torch.Tensor, border: int) -> torch.Tensor:
 def fit_stage_filters(
     stage,
     x_t: torch.Tensor,
-    x_t1: torch.Tensor,
+    x_t1: torch.Tensor | None = None,
     temporal_weight: float = 1.0,
     tether: float = 0.1,
     white_weight: float = 1.0,
@@ -49,7 +49,9 @@ def fit_stage_filters(
     optimizer: str = "adam",
     momentum: float = 0.9,
 ) -> dict[str, list[float]]:
-    """Train ``stage.bank`` on input-map pairs ``x_t``, ``x_t1`` (N, C, H, W).
+    """Train ``stage.bank`` on input-map pairs ``x_t``, ``x_t1`` (N, C, H, W),
+    or on sequences: ``x_t`` (N, T, C, H, W) and ``x_t1`` None (the bubbles
+    pool then spans all T frames, ``bubbles_seq_loss``).
 
     ``lr`` is relative to ``bank.step_scale()`` (the initial kernels' rms for
     spatial kernels, 1 for Gabor-mixing coefficients).
@@ -72,7 +74,8 @@ def fit_stage_filters(
         vel = torch.zeros_like(bank.weight)
     else:
         raise ValueError(f"unknown optimizer {optimizer!r}")
-    both = torch.cat([x_t[:refit_n], x_t1[:refit_n]])
+    seq = torch.stack([x_t, x_t1], 1) if x_t1 is not None else x_t  # (N, T, C, H, W)
+    both = seq[:refit_n].flatten(0, 1)
     hist = {"bubbles": [], "white": [], "tether": [], "drift": []}
     n_units = stage.tica.n_units
     eye = torch.eye(n_units)
@@ -81,11 +84,13 @@ def fit_stage_filters(
             stage.fit(both, border=border, seed=seed, **tica_kw)
             m, b = (t.detach() for t in stage.tica.affine)
             h = stage.tica.h
-        idx = torch.randint(len(x_t), (batch_size,), generator=gen)
-        s_t = _vectors(stage.features(x_t[idx]), border) @ m.T + b
-        s_t1 = _vectors(stage.features(x_t1[idx]), border) @ m.T + b
-        sparse = bubbles_loss(s_t, s_t1, h, temporal_weight, stage.tica.eps) / n_units
-        s = torch.cat([s_t, s_t1])
+        idx = torch.randint(len(seq), (batch_size,), generator=gen)
+        xb = seq[idx]  # (B, T, C, H, W)
+        f = stage.features(xb.flatten(0, 1))
+        f = f.view(len(idx), -1, *f.shape[1:])
+        frames = [_vectors(f[:, t], border) @ m.T + b for t in range(f.shape[1])]
+        sparse = bubbles_seq_loss(frames, h, temporal_weight, stage.tica.eps) / n_units
+        s = torch.cat(frames)
         s = s - s.mean(0)
         white = (s.T @ s / len(s) - eye).pow(2).sum() / n_units
         teth = bank.tether()
