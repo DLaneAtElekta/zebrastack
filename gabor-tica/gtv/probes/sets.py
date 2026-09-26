@@ -117,14 +117,19 @@ def second_order_scene(
     return bg + target_contrast * window * carrier * envelope
 
 
-def clutter_scene(items: list[torch.Tensor], size: int, gen: torch.Generator) -> torch.Tensor:
+def clutter_scene(items: list[torch.Tensor], size: int, gen: torch.Generator,
+                  return_positions: bool = False):
     """Place 28x28 item images (values >= 0, black background) at random
     non-clipped positions on a size x size canvas, combined by max (nearer
-    items occlude); returns the zero-mean canvas (size, size)."""
+    items occlude); returns the zero-mean canvas (size, size), and with
+    ``return_positions`` also each item's center (y, x) in pixels."""
     canvas = torch.zeros(size, size)
+    centers = []
     for it in items:
         h, w = it.shape
         y = int(torch.randint(0, size - h + 1, (1,), generator=gen))
         x = int(torch.randint(0, size - w + 1, (1,), generator=gen))
         canvas[y : y + h, x : x + w] = torch.maximum(canvas[y : y + h, x : x + w], it)
-    return canvas - canvas.mean()
+        centers.append((y + h / 2, x + w / 2))
+    canvas = canvas - canvas.mean()
+    return (canvas, centers) if return_positions else canvas

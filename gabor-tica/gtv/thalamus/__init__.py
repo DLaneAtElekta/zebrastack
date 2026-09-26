@@ -4,10 +4,12 @@ Modules:
     gain.py         attention field from generative templates; applied as a gain
                     on stage energies before normalization (Phase 6)
     expectation.py  predictive subtraction / explaining away (Phase 7)
-    routing.py      context neighborhoods, pulvinar routing (Phase 8, planned)
+    routing.py      pulvinar-style routing: priority map -> object-centered window (Phase 8)
 """
 
 from .expectation import expectation
 from .gain import feature_gain, feature_similarity_field, pass_through_gain
+from .routing import route_window, saliency_map, select_location, template_match_map
 
-__all__ = ["expectation", "feature_gain", "feature_similarity_field", "pass_through_gain"]
+__all__ = ["expectation", "feature_gain", "feature_similarity_field", "pass_through_gain", "route_window",
+           "saliency_map", "select_location", "template_match_map"]
