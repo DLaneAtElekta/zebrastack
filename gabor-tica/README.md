@@ -78,7 +78,7 @@ gabor-tica/
 | 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance; 5c: learning V4's Gabor-initialized filters gives no reliable gain; 5d: mixing Gabors across V2 sheet neighbors raises unit invariance (+0.06) but not readout tolerance; 5e: training on test-range transforms adds readout tolerance (+0.023), mostly from data diversity, not the temporal term; 5f: a learned mixing stack keeps V4's gain only for rotation and original accuracy at AIT |
 | 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar; on the learned stack (6d): no effect, templates degrade to 4/10; with ideal bottom-up templates (6e) at most +0.11, so templates are not the main limit; gain on the pass-through (6f) does not raise the ceiling |
 | 7 | Expectation channel | ❌ predictive subtraction at V4 suppresses expected responses (Kok signature, weak) but does not lower false alarms (0.66 → 0.67–0.71); 7b hierarchical (footwear) expectation neither (0.68–0.70): false alarms are set by the readout (0.69 even noiseless); 7c with readouts that see lookalikes: no condition changes sneaker-vs-lookalike d′ (0.36–0.43; noiseless ceiling 0.53) |
-| 8 | Context topography and routing (stretch) | — |
+| 8 | Context topography and routing (stretch) | ✅ routing (8b): learned priority + 4 serial glimpses raise sneaker-vs-lookalike d′ 0.21 → 0.54 and cut false alarms 0.74 → 0.63 under the bottleneck; oracle routing 1.45 |
 
 ## Phase 1 results (`configs/phase1.yaml`)
 
@@ -1515,6 +1515,66 @@ Findings:
     fitted without its edge cells). With the border masked it localizes 34% of
     single sneakers.
   - Phase 8b addresses both.
+
+## Phase 8b: learned priority and serial glimpses (`configs/phase8b.yaml`)
+
+Three additions to Phase 8's gate:
+- **Border mask:** V4's edge cells are ignored, as in its fitting.
+- **Learned priority map:** a linear per-cell sneaker detector on V4
+  features, trained on 1,500 separate scenes of *training* items with known
+  positions (sneaker cells vs all other interior cells). The noisy condition
+  trains it on noisy features.
+- **Serial glimpses:** the top-k locations with suppression of neighboring
+  cells, each routed window scored by an item classifier trained on routed
+  windows around every item of the training scenes. The scene score is the
+  max over glimpses. The informed item classifier has seen lookalike items;
+  the standard one has not.
+
+All task scenes are held out. AIT, noise T = 1 (the Phase 6c bottleneck);
+pooled reference from the same scenes: d′ vs lookalike 0.21, false alarms
+0.74.
+
+| Priority | Glimpses | d′ vs lookalike | False alarms (lookalike) | d′ vs absent | Target inside a glimpse |
+|---|---|---|---|---|---|
+| learned | 1 | 0.28 | 0.80 | 0.50 | 0.46 |
+| learned | 2 | 0.47 | 0.69 | 0.68 | 0.72 |
+| **learned** | **4** | **0.54** | **0.63** | **0.74** | **0.92** |
+| template (border masked) | 4 | 0.31 | 0.70 | 0.45 | 0.57 |
+| saliency (border masked) | 4 | 0.31 | 0.70 | 0.56 | 0.66 |
+| random | 4 | 0.25 | 0.72 | 0.42 | 0.51 |
+| oracle (true center) | 1 | 1.45 | 0.29 | 2.34 | 1.00 |
+
+Noiseless: learned 4 glimpses 0.61 / 0.58 (96% inside a glimpse); oracle
+1.61 / 0.25.
+
+Checks (noisy, vs pooled): glimpses raise discrimination by ≥ 0.2 ✅
+(+0.33); lower false alarms by ≥ 0.1 ✅ (0.74 → 0.63); learned single-glimpse
+localization ≥ 0.6 ❌ (0.46; 0.92 within 4 glimpses). Phase 8a's single-glimpse
+checks fail as before.
+
+Findings:
+- **Phase 8 exit met (measurable gain over Phase 7 on detection and
+  localization):** routing with a learned priority map and four glimpses more
+  than doubles sneaker-vs-lookalike d′ under the bottleneck (0.21 → 0.54) and
+  cuts lookalike false alarms by 0.11. This is the first mechanism in Phases
+  6–8 that reduces hallucinated targets. (The pooled reference here is lower
+  than in 7c, 0.21 vs 0.36, because the scene samples differ; the comparison
+  is within this run.)
+- **Where to look must be learned.** A projection on the category template
+  (the Phase 6 attention template) and feature saliency localize no better
+  than random in clutter; the discriminative per-cell detector does (46% in
+  one glimpse vs 19%). What drives attention (the template) is not what
+  drives good routing.
+- **Serial glimpses beat a single glimpse:** 1 → 4 glimpses take the target
+  inside a window from 46% to 92% and d′ from 0.28 to 0.54.
+- **A large gap to the oracle remains** (0.54 vs 1.45). The target is inside a
+  glimpse 92% of the time, so the loss is in the windows. They are centered on
+  8 px grid cells, up to about 5 px off the item, with parts of neighbors,
+  while the item classifier was trained on perfectly centered windows; and the
+  max over four glimpses lets non-target windows raise absent and lookalike
+  scores. Next: refine each glimpse's center (a second priority pass inside
+  the window) and train the item classifier on windows jittered as they are at
+  test.
 
 ## Related code elsewhere in this repo
 
