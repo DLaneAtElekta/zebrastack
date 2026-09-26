@@ -39,6 +39,7 @@ python experiments/phase6_attention.py --config configs/phase6e_fixed.yaml    # 
 python experiments/phase6_attention.py --config configs/phase6e_learned.yaml  # bottom-up template control, learned stack
 python experiments/phase6_attention.py --config configs/phase6f.yaml          # gain on the pass-through channels too
 python experiments/phase6_attention.py --config configs/phase7.yaml           # Phase 7: expectation channel (~60 min)
+python experiments/phase6_attention.py --config configs/phase7b.yaml          # Phase 7b: hierarchical expectation (~60 min)
 ```
 
 ## Layout
@@ -73,7 +74,7 @@ gabor-tica/
 | 4 | Temporal coherence | ❌ selectivity kept, but invariance gain +0.017 < 0.05; the fixed Design B front end leaves little for W to change |
 | 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance; 5c: learning V4's Gabor-initialized filters gives no reliable gain; 5d: mixing Gabors across V2 sheet neighbors raises unit invariance (+0.06) but not readout tolerance; 5e: training on test-range transforms adds readout tolerance (+0.023), mostly from data diversity, not the temporal term; 5f: a learned mixing stack keeps V4's gain only for rotation and original accuracy at AIT |
 | 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar; on the learned stack (6d): no effect, templates degrade to 4/10; with ideal bottom-up templates (6e) at most +0.11, so templates are not the main limit; gain on the pass-through (6f) does not raise the ceiling |
-| 7 | Expectation channel | ❌ predictive subtraction at V4 suppresses expected responses (Kok signature, weak) but does not lower false alarms (0.66 → 0.67–0.71) |
+| 7 | Expectation channel | ❌ predictive subtraction at V4 suppresses expected responses (Kok signature, weak) but does not lower false alarms (0.66 → 0.67–0.71); 7b hierarchical (footwear) expectation neither (0.68–0.70): false alarms are set by the readout (0.69 even noiseless) |
 | 8 | Context topography and routing (stretch) | — |
 
 ## Phase 1 results (`configs/phase1.yaml`)
@@ -1353,6 +1354,64 @@ Findings:
   component, leaving the sneaker-specific residual (sneaker minus the
   footwear mean) as the error that attention then amplifies. That component
   is exactly what distinguishes the target from its lookalikes.
+
+## Phase 7b: hierarchical expectation (`configs/phase7b.yaml`)
+
+Phase 7's sneaker expectation was shoe-general. Here:
+- **Superordinate prediction:** the expectation predicts the **footwear**
+  pattern (the mean template of sandal, sneaker and ankle boot), so
+  explaining it away leaves the sneaker-specific residual as error.
+- **Specific attention:** a gain on sneaker minus the footwear mean.
+- **Projection match:** the match rule is the **projection** coefficient (the
+  amount of the predicted pattern present). A ground-truth test showed that
+  Phase 7's z-scored match subtracts more than is there at isolated matches.
+  A sneaker-level expectation with the projection match separates the two
+  changes.
+- Everything else is as in Phase 7.
+
+| Condition (AIT) | d′ | False alarms (lookalike) | False alarms (absent) |
+|---|---|---|---|
+| noiseless, no attention | 0.85 | **0.69** | 0.52 |
+| no attention (noise T = 1) | 0.56 | 0.73 | 0.60 |
+| attention β = 2 (reference) | 0.67 | 0.66 | 0.54 |
+| + footwear expectation α = 0.5 / 1 | 0.68 / 0.68 | 0.68 / 0.70 | 0.55 / 0.57 |
+| + sneaker expectation, projection match (α = 1) | 0.68 | 0.68 | 0.57 |
+| + wrong-group expectation (tops) | 0.67 | 0.66 | 0.54 |
+| specific attention (sneaker − footwear), β = 2 | 0.60 | 0.69 | 0.59 |
+| specific attention + footwear expectation α = 0.5 / 1 | 0.63 / 0.66 | 0.70 / 0.70 | 0.57 / 0.58 |
+
+Expectation suppression at V4 (footwear expectation, α = 1, clean images):
+sneaker ×0.968, sandal ×0.974, ankle boot ×0.984, bag ×0.994, all others
+×1.00. Sneaker-vs-lookalike decoding from V4 goes from 0.936 to 0.939.
+
+Checks: expectation lowers false alarms ❌; expectation suppression ✅
+(stronger than Phase 7, and now confined to the expected group); decoding not
+worse ✅.
+
+Findings:
+- **The projection match fixes the d′ cost, not the false alarms.** With it,
+  expectation no longer lowers d′ (0.68 vs Phase 7's 0.65), but lookalike
+  false alarms stay at 0.66–0.70 in every expectation or attention variant.
+  Differences are within about one standard error (about 0.03 for 240 test
+  scenes).
+- **Specific attention is worse than plain attention** (d′ 0.60 vs 0.67):
+  the sneaker-specific residual is a weaker signal than the shared footwear
+  evidence it gives up.
+- **The false alarms are set by the readout, not by the representation.**
+  Without noise or attention, with the full information the stack has, the
+  detection readout still accepts 69% of lookalike scenes at an 80% hit rate.
+  V4 itself separates sneakers from lookalikes at 0.94. The readout is
+  trained on sneaker-present vs sneaker-absent scenes and never sees a
+  lookalike, so it learns the cheapest cue, footwear in general. Modulating
+  V4 changes the features, but each condition's retrained readout again picks
+  whatever separates present from absent. The expectation also acts only on
+  V4's second-order energies; the pass-through channels still carry the
+  shoe-general evidence (the Phase 6f diagnosis).
+- **So Phase 7's exit test, as posed here, measures the readout's training
+  set.** A fair test of whether expectation reduces hallucination needs
+  either a readout that is not retrained per condition (the fixed readout
+  also stays at 0.55–0.62 d′ and similar false alarms), or an expectation
+  that acts on everything the stage passes up.
 
 ## Related code elsewhere in this repo
 
