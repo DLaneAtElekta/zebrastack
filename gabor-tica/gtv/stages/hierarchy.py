@@ -138,14 +138,18 @@ class HigherStage(Stage):
 def build_stack(stage_cfgs: dict, in_channels: dict[str, int]) -> dict[str, "HigherStage"]:
     """Instantiate V4/PIT/AIT from a Phase 5 ``stages`` config. ``in_channels``
     maps "V1" and "V2" to their channel counts. ``learned_filters: true`` on a
-    stage gives it Gabor-initialized learnable kernels (``LearnedHigherStage``)."""
+    stage gives it Gabor-initialized learnable kernels (``LearnedHigherStage``);
+    ``bank: mix`` (with ``mix_radius``, ``offset``) a Gabor-mixing bank."""
     from .learned_gabor import LearnedHigherStage  # imports this module
 
     stages, prev = {}, in_channels["V2"]
     for name, sc in stage_cfgs.items():
         skip = sc.get("skip")
         kw = {"skip_channels": in_channels[skip] if skip else 0, "first_budget": sc.get("first_budget")}
-        if sc.get("learned_filters"):
+        if sc.get("bank") == "mix":
+            stages[name] = LearnedHigherStage(name, prev, sc["sheet"], sc["radius"], bank="mix",
+                                              mix_radius=sc.get("mix_radius", 1), offset=sc.get("offset", 2), **kw)
+        elif sc.get("learned_filters"):
             stages[name] = LearnedHigherStage(name, prev, sc["sheet"], sc["radius"],
                                               kernel_size=sc.get("kernel_size", 15), **kw)
         else:

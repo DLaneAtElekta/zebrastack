@@ -1,0 +1,91 @@
+# Phase 5f: the learned Gabor-mixing stack. V4 = the Phase 5e mixing (bubbles, radius 1,
+# tau 0.1, matched-range pairs), loaded; PIT and AIT trained the same way, greedily, on
+# the same pairs propagated up the stack (AIT offset 1: its input maps are 4 x 4).
+# Checks as Phase 5b, on the mean over 3 refit seeds; compare with configs/phase5b_seeds.yaml.
+# Run: python experiments/phase5_hierarchy.py --config configs/phase5f.yaml
+base_config: configs/phase2.yaml
+data:
+  n_fit: 4000
+  n_decode_train: 3000
+  n_decode_test: 2000
+stages:
+  V4:
+    sheet: 12
+    radius: 1
+    skip: null
+    border: 1
+    first_budget: all
+    bank: mix
+    mix_radius: 1
+    offset: 2
+    load_bank: runs/phase5e/v4_bubbles_r1_tether0.1_matched_T2.pt
+  PIT:
+    sheet: 14
+    radius: 2
+    skip: null
+    border: 0
+    first_budget: all
+    bank: mix
+    mix_radius: 1
+    offset: 2
+  AIT:
+    sheet: 16
+    radius: 2
+    skip: null
+    border: 0
+    first_budget: all
+    bank: mix
+    mix_radius: 1
+    offset: 1
+tica:
+  n_iter: 300
+  polish_iter: 100
+transforms:
+  shift_6px:
+  - 6.0
+  - 0.0
+  - 1.0
+  rotate_15deg:
+  - 0.0
+  - 15.0
+  - 1.0
+  scale_0.85:
+  - 0.0
+  - 0.0
+  - 0.85
+matched_readout:
+  n_train: 12000
+  pca_dims: 256
+curvature:
+  levels:
+  - 0.0
+  - 0.05
+  - 0.1
+  per_class: 150
+checks:
+  min_ait_accuracy: 0.5
+  cluster_null_percentile: 95
+  n_shuffles: 2000
+  max_ait_drop_vs_v2: 0.01
+output_dir: runs/phase5f
+mix_training:
+  n_pairs: 1000
+  pair_seed: 11
+  range:
+    max_shift: 6.0
+    max_rot_deg: 15.0
+    max_log_scale: 0.17
+  train:
+    temporal_weight: 1.0
+    tether: 0.1
+    white_weight: 1.0
+    optimizer: ngd
+    n_steps: 1200
+    lr: 0.0005
+    batch_size: 24
+    refit_every: 300
+    refit_n: 500
+refit_seeds:
+- 0
+- 1
+- 2

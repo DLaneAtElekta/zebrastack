@@ -1,0 +1,62 @@
+# Phase 5b (fixed Gabor stack) rerun with the matched readout over 3 whitening + TICA
+# refit seeds: the reference for Phase 5f. Same fit as 5b (seed 0 reproduces it).
+# Run: python experiments/phase5_hierarchy.py --config configs/phase5b_seeds.yaml
+base_config: configs/phase2.yaml
+data:
+  n_fit: 4000
+  n_decode_train: 3000
+  n_decode_test: 2000
+stages:
+  V4:
+    sheet: 12
+    radius: 1
+    skip: null
+    border: 1
+    first_budget: all
+  PIT:
+    sheet: 14
+    radius: 2
+    skip: null
+    border: 0
+    first_budget: all
+  AIT:
+    sheet: 16
+    radius: 2
+    skip: null
+    border: 0
+    first_budget: all
+tica:
+  n_iter: 300
+  polish_iter: 100
+transforms:
+  shift_6px:
+  - 6.0
+  - 0.0
+  - 1.0
+  rotate_15deg:
+  - 0.0
+  - 15.0
+  - 1.0
+  scale_0.85:
+  - 0.0
+  - 0.0
+  - 0.85
+matched_readout:
+  n_train: 12000
+  pca_dims: 256
+curvature:
+  levels:
+  - 0.0
+  - 0.05
+  - 0.1
+  per_class: 150
+checks:
+  min_ait_accuracy: 0.5
+  cluster_null_percentile: 95
+  n_shuffles: 2000
+  max_ait_drop_vs_v2: 0.01
+output_dir: runs/phase5b_seeds
+refit_seeds:
+- 0
+- 1
+- 2

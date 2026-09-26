@@ -12,10 +12,18 @@ V2 curvature coding, and AIT sheet category clustering (preference from each
 unit's own unpooled energy; neighbor agreement vs shuffled sheets).
 Exit: AIT decoding well above chance and emergent topographic category clusters.
 
+Phase 5f (``configs/phase5f.yaml``): stages with ``bank: mix`` are
+``LearnedHigherStage`` Gabor-mixing stages (Phase 5d/5e). Their mixing is
+loaded (``load_bank``) or trained greedily on frame pairs propagated through
+the stack below (``mix_training``) before the stage's whitening + TICA are
+fit. ``refit_seeds`` repeats the matched readout over whitening + TICA refits
+of every stage (filters fixed) and reports mean +- SE.
+
     python experiments/phase5_hierarchy.py [--config configs/phase5.yaml]
 """
 
 import argparse
+import copy
 import json
 import math
 from pathlib import Path
@@ -31,8 +39,9 @@ from gtv.config import load_config  # noqa: E402
 from gtv.data import CLASSES, REPO_PHOTOS, SUPERORDINATE, affine, load_fashion_mnist, load_grayscale, random_patches  # noqa: E402
 from gtv.probes import curvature_fragment  # noqa: E402
 from gtv.probes.decode import _standardize, fit_logistic, linear_decode  # noqa: E402
-from gtv.stages import HigherStage, V2Stage, build_stage  # noqa: E402
+from gtv.stages import HigherStage, LearnedHigherStage, V2Stage, build_stage  # noqa: E402
 from gtv.stages.tica import torus_distance  # noqa: E402
+from gtv.temporal import fit_stage_filters  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 INK, MUTED, GRID = "#1a1a19", "#6b6a63", "#e4e3dc"
@@ -90,15 +99,41 @@ def main() -> None:
                 s2.append(v2(a))
         return torch.cat(m1), torch.cat(s2)
 
-    stages, whitening_floored = {}, {}
+    stages, whitening_floored, mixing = {}, {}, {}
     m1_fit, s2_fit = low(x_fit)
     below = {"V1": m1_fit, "V2": s2_fit}
     prev_name, prev = "V2", s2_fit
+    mt = c5.get("mix_training")
+    if mt:  # frame pairs (image, transformed copy) for training mixing stages, propagated up the stack
+        x_p, _ = load_fashion_mnist("train", mt["n_pairs"], size, seed=mt["pair_seed"])
+        gp = torch.Generator().manual_seed(mt["pair_seed"])
+        npr, rg = len(x_p), mt["range"]
+        shift = (torch.rand(npr, 2, generator=gp) * 2 - 1) * rg["max_shift"]
+        rot = (torch.rand(npr, generator=gp) * 2 - 1) * rg["max_rot_deg"]
+        scl = torch.exp((torch.rand(npr, generator=gp) * 2 - 1) * rg["max_log_scale"])
+        pair_maps = torch.stack([low(x_p)[1], low(affine(x_p, shift, rot, scl))[1]], 1)  # (N, 2, C, H, W)
     for name, sc in c5["stages"].items():
         skip_src = sc["skip"]
-        st = HigherStage(name, prev.shape[1], sc["sheet"], sc["radius"],
-                         skip_channels=below[skip_src].shape[1] if skip_src else 0,
-                         first_budget=sc.get("first_budget"))
+        kw = {"skip_channels": below[skip_src].shape[1] if skip_src else 0, "first_budget": sc.get("first_budget")}
+        if sc.get("bank") == "mix":
+            if skip_src:
+                raise ValueError("mixing stages are trained without skips")
+            st = LearnedHigherStage(name, prev.shape[1], sc["sheet"], sc["radius"], bank="mix",
+                                    mix_radius=sc.get("mix_radius", 1), offset=sc.get("offset", 2), **kw)
+            if sc.get("load_bank"):
+                st.bank.weight.data.copy_(torch.load(ROOT / sc["load_bank"])["bank.weight"])
+                mixing[name] = {"loaded_from": sc["load_bank"], "drift": st.bank.drift()}
+            else:
+                tk = mt["train"]
+                hist = fit_stage_filters(st, pair_maps, None, temporal_weight=tk["temporal_weight"],
+                                         tether=tk["tether"], white_weight=tk["white_weight"],
+                                         n_steps=tk["n_steps"], lr=tk["lr"], batch_size=tk["batch_size"],
+                                         refit_every=tk["refit_every"], refit_n=tk["refit_n"], border=sc["border"],
+                                         seed=cfg["seed"], tica_kw=c5["tica"], optimizer=tk["optimizer"])
+                mixing[name] = {"drift": hist["drift"][-1], "change_share": st.bank.offdiagonal_share()}
+            print(f"{name} mixing: {mixing[name]}", flush=True)
+        else:
+            st = HigherStage(name, prev.shape[1], sc["sheet"], sc["radius"], **kw)
         skips = [below[skip_src]] if skip_src else None
         st.fit(prev, skips, border=sc["border"], seed=cfg["seed"], **c5["tica"])
         with torch.no_grad():
@@ -106,6 +141,11 @@ def main() -> None:
                              for i, pb in zip(range(0, len(prev), 256), prev.split(256))])
         stages[name] = st
         below[name] = nxt
+        if mt:
+            with torch.no_grad():
+                flat = pair_maps.flatten(0, 1)
+                nxt_p = torch.cat([st(b) for b in flat.split(256)])
+            pair_maps = nxt_p.view(npr, 2, *nxt_p.shape[1:])
         wh = st.tica.whitener
         floored = {"first_order": wh.parts[0].n_floored, "second_order": wh.parts[1].n_floored,
                    "joint": wh.joint.n_floored}
@@ -113,31 +153,32 @@ def main() -> None:
         whitening_floored[name] = floored
         print(f"fitted {name}: {tuple(nxt.shape)}; whitening components floored {floored}", flush=True)
 
-    def run(x):
+    def run(x, stack=None, lowmaps=None):
         """Per-stage maps for images x: V1 log energy; V2..AIT TICA outputs s."""
-        m1, s2 = low(x)
+        stack = stack or stages
+        m1, s2 = lowmaps if lowmaps is not None else low(x)
         maps = {"V1": m1, "V2": s2}
         prev = s2
         for name, sc in c5["stages"].items():
             skips = [maps[sc["skip"]]] if sc["skip"] else None
             with torch.no_grad():
-                prev = torch.cat([stages[name](pb, [s[i:i + 256] for s in skips] if skips else None)
+                prev = torch.cat([stack[name](pb, [s[i:i + 256] for s in skips] if skips else None)
                                   for i, pb in zip(range(0, len(prev), 256), prev.split(256))])
             maps[name] = prev
         return maps
 
-    def energy_of(name, s):
+    def energy_of(name, s, stack=None):
         if name == "V1":
             return s
-        st = v2 if name == "V2" else stages[name]
+        st = v2 if name == "V2" else (stack or stages)[name]
         return st.pooled_energy(s)
 
-    def readout(name, maps, x):
+    def readout(name, maps, x, stack=None):
         """2x2-pooled [s, pooled energy] (V1: log energy), flattened; pixels: the 28x28 content."""
         if name == "pixels":
             return F.adaptive_avg_pool2d(x, 28).flatten(1)
         s = maps[name]
-        feat = s if name == "V1" else torch.cat([s, energy_of(name, s)], 1)
+        feat = s if name == "V1" else torch.cat([s, energy_of(name, s, stack)], 1)
         return F.adaptive_avg_pool2d(feat, 2).flatten(1)
 
     maps_tr, maps_te = run(x_tr), run(x_te)
@@ -157,10 +198,11 @@ def main() -> None:
 
     # tolerance: same decoder, transformed test images
     n = len(x_te)
-    transformed = {}
+    transformed, x_trans = {}, {}
     for tname, (sx, rot, scl) in c5["transforms"].items():
         with torch.no_grad():
             xt = affine(x_te, torch.tensor([[sx, 0.0]]).expand(n, 2), torch.full((n,), rot), torch.full((n,), scl))
+        x_trans[tname] = xt
         mt = run(xt)
         transformed[tname] = {k: readout(k, mt, xt) for k in STAGE_ORDER}
     decoding = {}
@@ -176,13 +218,12 @@ def main() -> None:
     # ---- fairer readout: the same PCA dimensionality for every stage, more training data
     # (feature counts grow up the hierarchy, so the plain readout overfits more at the top)
     mr = c5.get("matched_readout")
-    matched = {}
+    matched, matched_seeds = {}, {}
     if mr:
         x_big, y_big = load_fashion_mnist("train", mr["n_train"], size, seed=7)
         maps_big = run(x_big)
-        n_rot = c5["transforms"].get("rotate_15deg")
-        for k in STAGE_ORDER:
-            ftr = readout(k, maps_big, x_big)
+
+        def matched_acc(ftr, tests):
             mu, sd = ftr.mean(0), ftr.std(0) + 1e-6
             zt = (ftr - mu) / sd
             _, _, vh = torch.linalg.svd(zt - zt.mean(0), full_matrices=False)
@@ -191,15 +232,44 @@ def main() -> None:
             m2, s2 = zp.mean(0), zp.std(0) + 1e-6
             with torch.enable_grad():
                 model = fit_logistic((zp - m2) / s2, y_big, len(CLASSES), l2=1e-3)
+            with torch.no_grad():
+                return {t: float((model(((((f - mu) / sd) @ proj) - m2) / s2).argmax(1) == y_te).float().mean())
+                        for t, f in tests.items()}
 
-            def acc(f):
-                with torch.no_grad():
-                    return float((model(((((f - mu) / sd) @ proj) - m2) / s2).argmax(1) == y_te).float().mean())
-
-            matched[k] = {"original": acc(feats_te[k])}
-            for tn in transformed:
-                matched[k][tn] = acc(transformed[tn][k])
+        for k in STAGE_ORDER:
+            tests = {"original": feats_te[k], **{tn: transformed[tn][k] for tn in transformed}}
+            matched[k] = matched_acc(readout(k, maps_big, x_big), tests)
             print(f"matched readout {k}: {({t: round(v, 3) for t, v in matched[k].items()})}", flush=True)
+
+        # the same readout after whitening + TICA refits of every upper stage (filters fixed)
+        extra = [sd_ for sd_ in c5.get("refit_seeds", []) if sd_ != cfg["seed"]]
+        if extra:
+            if any(sc["skip"] for sc in c5["stages"].values()):
+                raise ValueError("refit_seeds needs a stack without skips")
+            upper = ["V2"] + list(c5["stages"])
+            s2_cache = {"big": low(x_big)[1], "original": low(x_te)[1],
+                        **{tn: low(xt_)[1] for tn, xt_ in x_trans.items()}}
+            per_seed = {k: [{t: matched[k][t] for t in matched[k]}] for k in upper}
+            for sd_ in extra:
+                stack_s = copy.deepcopy(stages)
+                prev_s = s2_fit
+                for name, sc in c5["stages"].items():
+                    stack_s[name].fit(prev_s, None, border=sc["border"], seed=sd_, **c5["tica"])
+                    with torch.no_grad():
+                        prev_s = torch.cat([stack_s[name](b) for b in prev_s.split(256)])
+                mb = run(None, stack_s, (None, s2_cache["big"]))
+                mt_ = {t: run(None, stack_s, (None, s2_cache[t])) for t in ["original"] + list(x_trans)}
+                for k in upper:
+                    tests = {t: readout(k, mt_[t], None, stack_s) for t in mt_}
+                    per_seed[k].append(matched_acc(readout(k, mb, None, stack_s), tests))
+                print(f"refit seed {sd_}: { {k: round(per_seed[k][-1]['original'], 3) for k in upper} }", flush=True)
+            for k in upper:
+                matched_seeds[k] = {}
+                for t in per_seed[k][0]:
+                    v = torch.tensor([p_[t] for p_ in per_seed[k]], dtype=torch.float64)
+                    matched_seeds[k][t] = {"mean": float(v.mean()), "se": float(v.std() / math.sqrt(len(v)))}
+                means = {t: round(m["mean"], 3) for t, m in matched_seeds[k].items()}
+                print(f"matched readout {k}, {len(per_seed[k])} refits: {means}", flush=True)
 
     # ---- V4 vs V2 curvature coding
     cv = c5["curvature"]
@@ -261,8 +331,10 @@ def main() -> None:
         "ait_category_clusters": obs_c > clustering["category_null_p95"],
     }
     if matched and "max_ait_drop_vs_v2" in ch:
-        checks["ait_no_decline_vs_v2_matched"] = matched["AIT"]["original"] >= matched["V2"]["original"] - ch["max_ait_drop_vs_v2"]
-        checks["ait_rotation_at_least_v2_matched"] = matched["AIT"]["rotate_15deg"] >= matched["V2"]["rotate_15deg"]
+        mm = ({k: {t: m["mean"] for t, m in v.items()} for k, v in matched_seeds.items()} if matched_seeds
+              else matched)  # refit-seed means when available
+        checks["ait_no_decline_vs_v2_matched"] = mm["AIT"]["original"] >= mm["V2"]["original"] - ch["max_ait_drop_vs_v2"]
+        checks["ait_rotation_at_least_v2_matched"] = mm["AIT"]["rotate_15deg"] >= mm["V2"]["rotate_15deg"]
 
     # ---- figures
     fig, axes = plt.subplots(1, 2, figsize=(10, 3.2))
@@ -319,7 +391,8 @@ def main() -> None:
     fig.tight_layout()
     fig.savefig(out / "phase5_ait_sheet.png", dpi=120)
 
-    report = {"decoding": decoding, "matched_readout": matched, "curvature_decoding": curvature, "ait_clustering": clustering,
+    report = {"decoding": decoding, "matched_readout": matched, "matched_readout_refit_seeds": matched_seeds,
+              "mixing": mixing, "curvature_decoding": curvature, "ait_clustering": clustering,
               "whitening_floored": whitening_floored,
               "checks": checks, "passed": all(checks.values())}
     (out / "report.json").write_text(json.dumps(report, indent=2))

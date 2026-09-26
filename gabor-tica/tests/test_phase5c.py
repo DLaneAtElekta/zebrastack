@@ -168,3 +168,16 @@ def test_sequence_bubbles_generalizes_pairs_and_rewards_persistence():
     hist = fit_stage_filters(st, seq, None, n_steps=3, batch_size=4, refit_every=3, refit_n=6,
                              optimizer="ngd", lr=0.01, tica_kw={"n_iter": 5, "polish_iter": 1})
     assert len(hist["bubbles"]) == 3 and st.bank.drift() > 0
+
+
+def test_build_stack_mixing_stages_and_state_round_trip():
+    cfg = {"V4": {"sheet": 4, "radius": 1, "skip": None, "first_budget": "all", "bank": "mix", "mix_radius": 1,
+                  "offset": 2},
+           "PIT": {"sheet": 5, "radius": 1, "skip": None, "first_budget": "all", "bank": "mix", "offset": 1}}
+    st = build_stack(cfg, {"V1": 8, "V2": 9})
+    assert st["V4"].bank.nbr.shape == (9, 9) and st["PIT"].bank.offsets[1] == (0, 1)
+    with torch.no_grad():
+        st["V4"].bank.weight.add_(0.01)
+    other = build_stack(cfg, {"V1": 8, "V2": 9})
+    other["V4"].load_state_dict(st["V4"].state_dict())
+    assert torch.equal(other["V4"].bank.weight, st["V4"].bank.weight)
