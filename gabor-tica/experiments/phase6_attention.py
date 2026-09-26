@@ -57,18 +57,23 @@ def _style(ax, title, xlabel="", ylabel=""):
         ax.spines[s].set_color(GRID)
 
 
-def detection(feats: dict, hit_rate: float = 0.8, train_feats: dict | None = None) -> dict:
+def detection(feats: dict, hit_rate: float = 0.8, train_feats: dict | None = None,
+              negatives: tuple = ("absent",)) -> dict:
     """d' (present vs absent) and false alarms (lookalike, absent) at the
     threshold that catches ``hit_rate`` of present scenes; held-out, averaged.
     ``train_feats``: fit the readout (and its standardization) on these instead
-    (a fixed readout, e.g. trained without attention) and test on ``feats``."""
-    out = {"dprime": [], "fa_lookalike": [], "fa_absent": []}
+    (a fixed readout, e.g. trained without attention) and test on ``feats``.
+    ``negatives``: scene kinds the readout is trained to reject; with
+    ("absent", "lookalike") it is an informed readout that has seen lookalikes
+    (false alarms still on held-out scenes). Also reports d' between present
+    and lookalike scores (``dprime_lookalike``)."""
+    out = {"dprime": [], "fa_lookalike": [], "fa_absent": [], "dprime_lookalike": []}
     n = len(feats["present"])
     src = train_feats if train_feats is not None else feats
     for seed in SEEDS:
         tr, te = train_test_split(n, 0.6, torch.Generator().manual_seed(seed))
-        xtr = torch.cat([src["present"][tr], src["absent"][tr]])
-        ytr = torch.cat([torch.ones(len(tr)), torch.zeros(len(tr))]).long()
+        xtr = torch.cat([src["present"][tr]] + [src[k][tr] for k in negatives])
+        ytr = torch.cat([torch.ones(len(tr))] + [torch.zeros(len(tr)) for _ in negatives]).long()
         mu, sd = xtr.mean(0), xtr.std(0) + 1e-6
         with torch.enable_grad():
             model = fit_logistic((xtr - mu) / sd, ytr, 2, l2=1e-2)
@@ -79,6 +84,8 @@ def detection(feats: dict, hit_rate: float = 0.8, train_feats: dict | None = Non
         thr = torch.quantile(sp, 1 - hit_rate)
         out["fa_lookalike"].append(float((sc["lookalike"] > thr).float().mean()))
         out["fa_absent"].append(float((sa > thr).float().mean()))
+        sl = sc["lookalike"]
+        out["dprime_lookalike"].append(float((sp.mean() - sl.mean()) / (0.5 * (sp.var() + sl.var())).sqrt()))
     return {k: sum(v) / len(v) for k, v in out.items()}
 
 
@@ -280,8 +287,10 @@ def main() -> None:
     results = {}
     reference = None  # AIT features without attention: the fixed readout's training data
     if noise_T is not None:
-        results["noiseless_no_attention"] = {"AIT": detection(
-            {k: readout(upper(*lows[k]), "AIT") for k in KINDS})}
+        clean = {k: readout(upper(*lows[k]), "AIT") for k in KINDS}
+        results["noiseless_no_attention"] = {"AIT": detection(clean)}
+        if c6.get("informed_readout"):
+            results["noiseless_no_attention"]["AIT_informed"] = detection(clean, negatives=("absent", "lookalike"))
     for cname, (gain, spatial, pgain, expct) in conditions.items():
         maps = {k: upper(*lows[k], gain, spatial, noise_T, i, pgain, expct) for i, k in enumerate(KINDS)}
         feats_ait = {k: readout(maps[k], "AIT") for k in KINDS}
@@ -290,6 +299,11 @@ def main() -> None:
         results[cname] = {stage: detection({k: readout(maps[k], stage) for k in KINDS})
                           for stage in ("V4", "AIT")}
         results[cname]["AIT_fixed_readout"] = detection(feats_ait, train_feats=reference)
+        if c6.get("informed_readout"):
+            # readouts that have seen lookalikes: they measure what the representation separates
+            inf = ("absent", "lookalike")
+            results[cname]["AIT_informed"] = detection(feats_ait, negatives=inf)
+            results[cname]["AIT_informed_fixed"] = detection(feats_ait, train_feats=reference, negatives=inf)
         if gain is not None:
             results[cname]["gain_range"] = [float(gain.min()), float(gain.max())]
         if pgain is not None:
@@ -298,6 +312,11 @@ def main() -> None:
         print(f"{cname}: AIT d' {r['dprime']:.2f} FA(lookalike) {r['fa_lookalike']:.2f} | fixed-readout d' "
               f"{results[cname]['AIT_fixed_readout']['dprime']:.2f} | V4 d' {results[cname]['V4']['dprime']:.2f}",
               flush=True)
+        if c6.get("informed_readout"):
+            ri, rf = results[cname]["AIT_informed"], results[cname]["AIT_informed_fixed"]
+            print(f"   informed: d' {ri['dprime']:.2f} FA(lookalike) {ri['fa_lookalike']:.2f} "
+                  f"d'(vs lookalike) {ri['dprime_lookalike']:.2f} | fixed informed: FA {rf['fa_lookalike']:.2f} "
+                  f"d'(vs lookalike) {rf['dprime_lookalike']:.2f}", flush=True)
 
     # ---- tuning shift (Cukur et al.): V4 units' category tuning with vs without attention (beta 1)
     base_maps = upper(*low(x_val))
@@ -377,6 +396,18 @@ def main() -> None:
         checks["expectation_suppression"] = kok["target_ratio"] < kok["other_ratio_mean"]
         checks["expectation_sharpens"] = (kok["target_vs_lookalike_decoding"]["with"]
                                           >= kok["target_vs_lookalike_decoding"]["without"])
+    if ex and c6.get("informed_readout"):
+        # Phase 7c: the same exit test on readouts that have seen lookalikes
+        ref_i = results[f"beta_{ex['with_beta']}"]["AIT_informed"]
+        cands = [k for k in results if k.startswith(("att_expect_", "att_specific_expect_"))
+                 and k not in ("att_expect_wrong", "att_expect_uniform")]
+        kept = [k for k in cands if results[k]["AIT_informed"]["dprime"] >= ref_i["dprime"] - ch["max_dprime_drop"]]
+        best_i = min(kept, key=lambda k: results[k]["AIT_informed"]["fa_lookalike"]) if kept else None
+        checks["informed_expectation_lowers_false_alarms"] = bool(best_i) and (
+            results[best_i]["AIT_informed"]["fa_lookalike"] <= ref_i["fa_lookalike"] - ch["min_fa_drop"])
+        best_d = max(cands, key=lambda k: results[k]["AIT_informed"]["dprime_lookalike"])
+        checks["informed_expectation_raises_discrimination"] = (
+            results[best_d]["AIT_informed"]["dprime_lookalike"] - ref_i["dprime_lookalike"] >= ch["min_discrimination_gain"])
     if "feature_min_specificity" in ch:
         fe_wrong = results["wrong_template"]["AIT"]["dprime"] - base
         checks["attention_is_target_specific"] = (results[best_beta]["AIT"]["dprime"] - base) - fe_wrong >= ch["feature_min_specificity"]
