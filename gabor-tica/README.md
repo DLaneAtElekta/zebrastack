@@ -28,6 +28,7 @@ python experiments/phase5_hierarchy.py       # Phase 5: V4 -> PIT -> AIT on Fash
 python experiments/phase5_hierarchy.py --config configs/phase5b.yaml  # Phase 5b: full pass-through (~25 min)
 python experiments/phase5c_learned_filters.py                         # Phase 5c: learned V4 filters, needs 5b (~70 min)
 python experiments/phase5d_gabor_mixing.py                            # Phase 5d: Gabor mixing across V2 neighbors, needs 5b (~2.5 h)
+python experiments/phase5d_gabor_mixing.py --config configs/phase5e.yaml  # Phase 5e: test-range transforms, sequences (~2.5 h)
 python experiments/phase6_attention.py       # Phase 6: attention from top-down templates (needs the Phase 5 checkpoint; ~20 min)
 python experiments/phase6_attention.py --config configs/phase6b.yaml  # Phase 6 on the 5b stack, 600 scenes/kind (~60 min)
 python experiments/phase6_attention.py --config configs/phase6c.yaml  # Phase 6 with a response-noise bottleneck (~60 min)
@@ -63,7 +64,7 @@ gabor-tica/
 | FE-2 | Learned per-channel precision | ⚠️ 2 of 4 checks; precision learns cleanly with V1 normalization, but doesn't fix the second-order readout |
 | FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; no headroom exists at V1–V2 (reconstruction always matches the input ceiling) |
 | 4 | Temporal coherence | ❌ selectivity kept, but invariance gain +0.017 < 0.05; the fixed Design B front end leaves little for W to change |
-| 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance; 5c: learning V4's Gabor-initialized filters gives no reliable gain; 5d: mixing Gabors across V2 sheet neighbors raises unit invariance (+0.06) but not readout tolerance |
+| 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance; 5c: learning V4's Gabor-initialized filters gives no reliable gain; 5d: mixing Gabors across V2 sheet neighbors raises unit invariance (+0.06) but not readout tolerance; 5e: training on test-range transforms adds readout tolerance (+0.023), mostly from data diversity, not the temporal term |
 | 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar |
 | 7 | Expectation channel | — |
 | 8 | Context topography and routing (stretch) | — |
@@ -866,6 +867,70 @@ Findings:
   candidates: training transforms matching the test ones and longer sequences
   (more than two frames), a wider mixing radius, and stacking the same learned
   mixing at PIT and AIT.
+
+## Phase 5e: training on the tested transform range (`configs/phase5e.yaml`, `configs/phase5e_control.yaml`)
+
+Phase 5d trained on small transforms (≤ 4 px, ≤ 10°, ≤ 8% scale) and was
+tested on larger ones (6 px, 15°, 0.85). Here the same Gabor-mixing V4
+(radius 1, τ = 0.1, same optimizer, seeds and learning-off baseline) is
+trained on end transforms drawn from the **matched range** (≤ 6 px, ≤ 15°,
+|log scale| ≤ 0.17), as pairs (original + end transform) or as **4-frame
+sequences** (frame k = k/3 of the end transform, with the bubbles pool
+spanning all 4 frames; `bubbles_seq_loss`). Extrapolation transforms beyond
+the range (10 px, 25°, scale 0.75) are reported separately.
+
+Learning-off baseline: 0.727 ± 0.005 tested transforms, 0.530 ± 0.001
+invariance, 0.546 ± 0.005 extrapolation. Changes vs it (mean ± SE over 3 refit seeds):
+
+| Training data | Objective | Tested transforms | Invariance index | Extrapolation | Original |
+|---|---|---|---|---|---|
+| small pairs (Phase 5d) | bubbles | +0.006 ± 0.006 | **+0.058** ± 0.005 | — | 0.874 |
+| small pairs (Phase 5d) | still | −0.017 ± 0.007 | +0.040 ± 0.006 | — | 0.876 |
+| **matched pairs** | **bubbles** | **+0.023 ± 0.006** | +0.040 ± 0.006 | +0.023 ± 0.006 | 0.874 |
+| matched pairs (control run) | still | +0.014 ± 0.005 | +0.040 ± 0.007 | +0.018 ± 0.006 | 0.877 |
+| matched, T = 4 | bubbles | +0.002 ± 0.009 | **+0.057** ± 0.004 | +0.025 ± 0.005 | 0.874 |
+| matched, T = 4 | still | +0.006 ± 0.009 | +0.054 ± 0.006 | +0.014 ± 0.009 | 0.869 |
+| matched, T = 4, w = 3 | bubbles | +0.010 ± 0.011 | +0.046 ± 0.007 | +0.014 ± 0.013 | 0.871 |
+
+Best bubbles variant, per transform (matched pairs vs learning off): shift
+0.794 vs 0.770 (V2: 0.799), rotation 0.664 vs 0.621 (V2: 0.694), scale 0.791
+vs 0.790.
+
+Checks (declared before running; recomputed from the log, because the
+w = 3 variant shared a label with the w = 1 one and overwrote it in
+`report.json`, since fixed): learning off equals the fixed V4 ✅; tested-transform
+accuracy ≥ +0.02 and > 2 SE ✅ (+0.023, matched pairs); invariance ≥ +0.05
+and > 2 SE ✅ (+0.057, T = 4); a matched-range variant beats Phase 5d's
++0.006 by ≥ 0.01 ✅; 4-frame sequences beat pairs ❌ (best +0.010 vs +0.023).
+Added afterwards, the missing control: bubbles vs still on matched pairs,
++0.009 ± 0.004, just short of the 0.01 temporal margin.
+
+Findings:
+- **Matching the training range to the test range is what raises
+  readout tolerance.** From small to matched pairs, tested-transform accuracy
+  rises by 0.017 with bubbles and by 0.031 with still. V4 reaches V2's shift
+  tolerance (0.794 vs 0.799) and closes 60% of the rotation gap to V2. The gain
+  also extends past the training range (+0.02 on the extrapolation set).
+- **Most of it is data diversity, not temporal coherence.** The still
+  objective, which treats every frame as an independent image, gets 60% of
+  the gain (+0.014 of +0.023). On 4-frame sequences, still and bubbles are
+  equal on every measure. The temporal term adds at most about +0.01 (pairs),
+  just short of the declared margin.
+- **Two different effects:** training on more varied frames with
+  neighbor mixing raises unit invariance (+0.04 to +0.06 in every radius-1
+  variant); matched-range pairs are what make the linear readout more
+  tolerant. Sequences at the same range raise unit invariance more but
+  readout tolerance less. Splitting the range into small steps gives units
+  that are stable across nearby frames, but that is not what the readout
+  needs when the whole range must map to one category.
+- **Stronger pooling (w = 3) did not help.**
+- The honest reading for the plan's claim that invariance comes from
+  temporal coherence: in this stack, invariance at V4 comes from
+  cross-feature mixing trained on transformed images. Temporal association
+  in its bubbles form adds little over treating those images independently.
+  A contrastive or slow-feature objective, which directly rewards equal
+  responses across the full range, would be the stronger test of the
+  temporal hypothesis.
 
 ## Phase 6 results (`configs/phase6.yaml`)
 
