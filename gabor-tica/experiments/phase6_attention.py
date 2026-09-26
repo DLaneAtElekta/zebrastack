@@ -33,10 +33,10 @@ import torch.nn.functional as F  # noqa: E402
 from gtv.config import load_config  # noqa: E402
 from gtv.data import CLASSES, load_fashion_mnist  # noqa: E402
 from gtv.generative import decode_down, fit_topdown  # noqa: E402
-from gtv.probes.decode import fit_logistic, train_test_split  # noqa: E402
+from gtv.probes.decode import fit_logistic, linear_decode, train_test_split  # noqa: E402
 from gtv.probes.sets import clutter_scene  # noqa: E402
 from gtv.stages import V2Stage, build_higher_stack, build_stage  # noqa: E402
-from gtv.thalamus import feature_gain, feature_similarity_field, pass_through_gain  # noqa: E402
+from gtv.thalamus import expectation, feature_gain, feature_similarity_field, pass_through_gain  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 INK, MUTED, GRID = "#1a1a19", "#6b6a63", "#e4e3dc"
@@ -122,12 +122,13 @@ def main() -> None:
 
     noise_T = c6.get("response_noise_T")
 
-    def upper(m1, s2, gain=None, spatial=None, noise=None, noise_seed=0, pass_gain=None):
+    def upper(m1, s2, gain=None, spatial=None, noise=None, noise_seed=0, pass_gain=None, expect=None):
         """``gain``: feature-only (n_second,) gain at the attended stage;
         ``spatial``: (target, beta) for a feature-similarity field computed there;
         ``noise``: response-noise scale T at the attended stage (same draws for a
         given ``noise_seed``, so conditions are compared on identical noise);
-        ``pass_gain``: (n_first,) gain on the attended stage's pass-through channels."""
+        ``pass_gain``: (n_first,) gain on the attended stage's pass-through channels;
+        ``expect``: expectation channel (predictive subtraction) at the attended stage."""
         maps = {"V1": m1, "V2": s2}
         prev = s2
         ngen = torch.Generator().manual_seed(noise_seed)
@@ -137,12 +138,12 @@ def main() -> None:
                 out_ = []
                 for i, pb in zip(range(0, len(prev), 256), prev.split(256)):
                     skips = [maps[sc["skip"]][i:i + 256]] if sc["skip"] else None
-                    g, nt, pg = None, None, None
+                    g, nt, pg, ex = None, None, None, None
                     if name == tk["attend_stage"]:
-                        g, nt, pg = gain, noise, pass_gain
+                        g, nt, pg, ex = gain, noise, pass_gain, expect
                         if spatial is not None:
                             g = feature_similarity_field(stack[name], pb, templates, spatial[0], spatial[1])
-                    out_.append(stack[name](pb, skips, g, nt, ngen, pg))
+                    out_.append(stack[name](pb, skips, g, nt, ngen, pg, ex))
                 prev = torch.cat(out_)
                 maps[name] = prev
         return maps
@@ -224,13 +225,13 @@ def main() -> None:
             print(f"noise T {T}: no-attention AIT d' {r['dprime']:.2f}", flush=True)
         return
 
-    conditions = {f"beta_{b}": (feature_gain(templates, tk["target"], b), None, None) for b in c6["betas"]}
-    conditions["wrong_template"] = (feature_gain(templates, c6["wrong_template"], 1.0), None, None)
+    conditions = {f"beta_{b}": (feature_gain(templates, tk["target"], b), None, None, None) for b in c6["betas"]}
+    conditions["wrong_template"] = (feature_gain(templates, c6["wrong_template"], 1.0), None, None, None)
     if c6.get("spatial", True):
         for b in c6["betas"]:
             if b > 0:
-                conditions[f"spatial_beta_{b}"] = (None, (tk["target"], b), None)
-        conditions["spatial_wrong_template"] = (None, (c6["wrong_template"], 1.0), None)
+                conditions[f"spatial_beta_{b}"] = (None, (tk["target"], b), None, None)
+        conditions["spatial_wrong_template"] = (None, (c6["wrong_template"], 1.0), None, None)
     if c6.get("pass_betas") or c6.get("both_betas"):
         # gain on the pass-through channels too: bottom-up templates of their energy
         # (category means over the fitting images), with a fixed power budget
@@ -241,19 +242,29 @@ def main() -> None:
         pass_templates = torch.stack([e1[y_fit == k].mean(0) for k in range(len(CLASSES))])
         wb = c6.get("wrong_beta", 1.0)
         for b in c6.get("pass_betas", []):
-            conditions[f"pass_beta_{b}"] = (None, None, pass_through_gain(pass_templates, tk["target"], b))
+            conditions[f"pass_beta_{b}"] = (None, None, pass_through_gain(pass_templates, tk["target"], b), None)
         for b in c6.get("both_betas", []):
             conditions[f"both_beta_{b}"] = (feature_gain(templates, tk["target"], b), None,
-                                           pass_through_gain(pass_templates, tk["target"], b))
+                                           pass_through_gain(pass_templates, tk["target"], b), None)
         conditions["both_wrong_template"] = (feature_gain(templates, c6["wrong_template"], wb), None,
-                                             pass_through_gain(pass_templates, c6["wrong_template"], wb))
+                                             pass_through_gain(pass_templates, c6["wrong_template"], wb), None)
+    ex = c6.get("expectation")
+    if ex:
+        # Phase 7: expectation (predictive subtraction), alone and with attention at beta ex["with_beta"]
+        att_gain = feature_gain(templates, tk["target"], ex["with_beta"])
+        for a in ex["alphas"]:
+            conditions[f"expect_a{a}"] = (None, None, None, expectation(templates, tk["target"], a))
+            conditions[f"att_expect_a{a}"] = (att_gain, None, None, expectation(templates, tk["target"], a))
+        a0 = ex["control_alpha"]
+        conditions["att_expect_uniform"] = (att_gain, None, None, expectation(templates, tk["target"], a0, spatial=False))
+        conditions["att_expect_wrong"] = (att_gain, None, None, expectation(templates, c6["wrong_template"], a0))
     results = {}
     reference = None  # AIT features without attention: the fixed readout's training data
     if noise_T is not None:
         results["noiseless_no_attention"] = {"AIT": detection(
             {k: readout(upper(*lows[k]), "AIT") for k in KINDS})}
-    for cname, (gain, spatial, pgain) in conditions.items():
-        maps = {k: upper(*lows[k], gain, spatial, noise_T, i, pgain) for i, k in enumerate(KINDS)}
+    for cname, (gain, spatial, pgain, expct) in conditions.items():
+        maps = {k: upper(*lows[k], gain, spatial, noise_T, i, pgain, expct) for i, k in enumerate(KINDS)}
         feats_ait = {k: readout(maps[k], "AIT") for k in KINDS}
         if cname == "beta_0.0":
             reference = feats_ait
@@ -284,6 +295,32 @@ def main() -> None:
              "median_log_ratio_change": float((rel1 / rel0).log().median())}
     print(f"tuning shift: {shift}", flush=True)
 
+    kok = None
+    if ex:
+        # expectation suppression (Kok et al.): the attended stage's second-order
+        # responses to clean images of each category, with vs without the target
+        # expectation (response = distance from the no-expectation mean pattern),
+        # and target-vs-lookalike decoding from those responses
+        fn = expectation(templates, tk["target"], ex["control_alpha"])
+        idx = names.index(tk["attend_stage"])
+        below_val = val_maps["V2" if idx == 0 else names[idx - 1]]
+        with torch.no_grad():
+            f0 = torch.cat([att.features(b)[:, sl] for b in below_val.split(256)])
+            f1 = torch.cat([att.features(b, expect=fn)[:, sl] for b in below_val.split(256)])
+        mu = f0.mean(0, keepdim=True)
+        r0, r1 = (f0 - mu).flatten(1).norm(dim=1), (f1 - mu).flatten(1).norm(dim=1)
+        ratio = {CLASSES[c]: float(r1[y_val == c].mean() / r0[y_val == c].mean()) for c in range(len(CLASSES))}
+        others = [ratio[CLASSES[c]] for c in range(len(CLASSES)) if c != tk["target"]]
+        mask = (y_val == tk["target"]) | torch.isin(y_val, torch.tensor(tk["lookalikes"]))
+        yl = (y_val[mask] == tk["target"]).long()
+        dec = [sum(linear_decode(F.adaptive_avg_pool2d(f[mask], 2).flatten(1), yl, seed=sd) for sd in SEEDS) / len(SEEDS)
+               for f in (f0, f1)]
+        kok = {"response_ratio": ratio, "target_ratio": ratio[CLASSES[tk["target"]]],
+               "other_ratio_mean": sum(others) / len(others),
+               "target_vs_lookalike_decoding": {"without": dec[0], "with": dec[1]}}
+        print(f"expectation suppression: target response x{kok['target_ratio']:.3f}, others x{kok['other_ratio_mean']:.3f}; "
+              f"target vs lookalike decoding {dec[0]:.3f} -> {dec[1]:.3f}", flush=True)
+
     ch = c6["checks"]
     base = results["beta_0.0"]["AIT"]["dprime"]
     cond_names = [k for k in results if k != "noiseless_no_attention"]
@@ -311,6 +348,16 @@ def main() -> None:
         if best_both:
             checks["combined_is_target_specific"] = (
                 results[best_both]["AIT"]["dprime"] - base - both_wrong >= ch["feature_min_specificity"])
+    if ex:
+        att_base = results[f"beta_{ex['with_beta']}"]["AIT"]
+        cands = [k for k in results if k.startswith("att_expect_a")]
+        kept = [k for k in cands if results[k]["AIT"]["dprime"] >= att_base["dprime"] - ch["max_dprime_drop"]]
+        best_ex = min(kept, key=lambda k: results[k]["AIT"]["fa_lookalike"]) if kept else None
+        checks["expectation_lowers_false_alarms"] = bool(best_ex) and (
+            results[best_ex]["AIT"]["fa_lookalike"] <= att_base["fa_lookalike"] - ch["min_fa_drop"])
+        checks["expectation_suppression"] = kok["target_ratio"] < kok["other_ratio_mean"]
+        checks["expectation_sharpens"] = (kok["target_vs_lookalike_decoding"]["with"]
+                                          >= kok["target_vs_lookalike_decoding"]["without"])
     if "feature_min_specificity" in ch:
         fe_wrong = results["wrong_template"]["AIT"]["dprime"] - base
         checks["attention_is_target_specific"] = (results[best_beta]["AIT"]["dprime"] - base) - fe_wrong >= ch["feature_min_specificity"]
@@ -353,7 +400,7 @@ def main() -> None:
     fig2.tight_layout()
     fig2.savefig(out / "phase6_scenes.png", dpi=120)
 
-    report = {"template_source": source, "template_hits": hits, "template_corr": corr.tolist(), "results": results, "tuning_shift": shift,
+    report = {"expectation_suppression": kok, "template_source": source, "template_hits": hits, "template_corr": corr.tolist(), "results": results, "tuning_shift": shift,
               "best_beta": best_beta, "best_spatial": best_spatial if spatial_keys else None, "checks": checks, "passed": all(checks.values())}
     (out / "report.json").write_text(json.dumps(report, indent=2))
     print(json.dumps({"checks": checks, "best_beta": best_beta}, indent=2))

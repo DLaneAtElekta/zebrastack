@@ -1,0 +1,43 @@
+# Phase 7: the expectation channel. Predictive subtraction at V4 (the expected
+# category's template deviation, placed where the noisy input matches it) on the
+# fixed stack with bottom-up templates and the 6c noise bottleneck (T = 1),
+# alone and combined with attention (energy gain, beta 2).
+# Exit (plan): false alarms drop while d' is maintained.
+# Run: python experiments/phase6_attention.py --config configs/phase7.yaml
+base_config: configs/phase5b.yaml
+stack_checkpoint: runs/phase5b/phase5_stages.pt
+
+template_source: bottomup    # control: category-mean V4 features instead of generated templates
+topdown: {n_fit: 2000, kernel: 3, n_iter: 400, lr: 0.02}
+
+task:
+  target: 7                 # sneaker
+  lookalikes: [5, 9]        # sandal, ankle boot: false-alarm test
+  n_per_kind: 600          # 240 in Phase 6; more scenes to cut d' noise
+  n_distractors: 3          # plus the target / lookalike; absent scenes get one more distractor
+  attend_stage: V4
+
+response_noise_T: 1.0         # calibration (no attention, AIT d'): T=1 0.56, 3 0.68, 10 0.72, 30 0.74; closest to 0.5
+
+betas: [0.0, 1.0, 2.0]       # 0 = no attention
+wrong_template: 8            # control: attend to / expect "bag" instead
+spatial: false               # the spatial field had no effect in 6c-6e
+expectation:                 # predictive subtraction at V4 (gtv.thalamus.expectation)
+  alphas: [0.5, 1.0, 2.0]    # alone and with attention
+  with_beta: 2.0             # the attention it is combined with (best in 6e)
+  control_alpha: 1.0         # for the uniform (constant-offset) and wrong-expectation controls and the Kok analysis
+
+checks:                      # declared before running (Phase 7 checks at the end)
+  min_template_hits: 8
+  max_noisy_baseline_fraction: 0.8   # the noise must cost information (noisy baseline <= 0.8 x noiseless)
+  # gains are capped by the noiseless ceiling (~0.85 from ~0.5), hence lower bars than Phase 6's 0.3
+  min_dprime_gain: 0.2               # feature gain, best beta vs beta = 0 (retrained readout)
+  feature_min_specificity: 0.1       # ... and by this much more than the wrong-template gain
+  spatial_min_dprime_gain: 0.2       # spatial feature-similarity field, best beta
+  spatial_min_specificity: 0.1
+  max_dprime_drop: 0.05       # Phase 7: attention + expectation keeps AIT d' within this of attention alone
+  min_fa_drop: 0.05           # and lowers lookalike false alarms by at least this
+                              # plus: expected-category responses suppressed more than others (Kok),
+                              # and target-vs-lookalike decoding at V4 not worse with expectation
+
+output_dir: runs/phase7

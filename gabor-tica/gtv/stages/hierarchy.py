@@ -64,7 +64,8 @@ class HigherStage(Stage):
 
     def features(self, x: torch.Tensor, skips: list[torch.Tensor] | None = None,
                  gain: torch.Tensor | None = None, noise_T: float | None = None,
-                 generator: torch.Generator | None = None, pass_gain: torch.Tensor | None = None) -> torch.Tensor:
+                 generator: torch.Generator | None = None, pass_gain: torch.Tensor | None = None,
+                 expect=None) -> torch.Tensor:
         """(B, C, H, W) [+ skip maps] -> (B, n_first + n_second, H/2, W/2).
 
         ``gain`` (block step [3], the thalamic attention field): multiplies the
@@ -83,7 +84,11 @@ class HigherStage(Stage):
 
         ``pass_gain`` (n_first,): attention gain on the first-order pass-through
         channels, applied before their noise (so it raises their signal-to-noise
-        as ``gain`` does for the energies)."""
+        as ``gain`` does for the energies).
+
+        ``expect``: the expectation channel (``gtv.thalamus.expectation``), a
+        function applied to the log-normalized energies after the noise and
+        before pooling, subtracting the predicted component."""
         e = energy(self.bank(x))
         if gain is not None:
             e = e * (gain.view(1, -1, 1, 1) if gain.dim() == 1 else gain)
@@ -91,7 +96,10 @@ class HigherStage(Stage):
         if noise_T is not None:
             noise = torch.randn(r.shape, generator=generator)
             r = (r + torch.sqrt(r.clamp(min=0) / noise_T) * noise).clamp(min=0)
-        second = F.avg_pool2d(self.log(r), 2)
+        lr_ = self.log(r)
+        if expect is not None:
+            lr_ = expect(lr_)
+        second = F.avg_pool2d(lr_, 2)
         h, w = second.shape[-2:]
         first = [F.adaptive_avg_pool2d(x, (h, w))]
         for s in skips or []:
@@ -116,8 +124,9 @@ class HigherStage(Stage):
 
     def forward(self, x: torch.Tensor, skips: list[torch.Tensor] | None = None,
                 gain: torch.Tensor | None = None, noise_T: float | None = None,
-                generator: torch.Generator | None = None, pass_gain: torch.Tensor | None = None) -> torch.Tensor:
-        f = self.features(x, skips, gain, noise_T, generator, pass_gain)
+                generator: torch.Generator | None = None, pass_gain: torch.Tensor | None = None,
+                expect=None) -> torch.Tensor:
+        f = self.features(x, skips, gain, noise_T, generator, pass_gain, expect)
         m, b = self.tica.affine
         return torch.einsum("nd,bdhw->bnhw", m, f) + b.view(1, -1, 1, 1)
 
