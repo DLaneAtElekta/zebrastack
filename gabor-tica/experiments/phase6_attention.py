@@ -36,7 +36,7 @@ from gtv.generative import decode_down, fit_topdown  # noqa: E402
 from gtv.probes.decode import fit_logistic, train_test_split  # noqa: E402
 from gtv.probes.sets import clutter_scene  # noqa: E402
 from gtv.stages import V2Stage, build_higher_stack, build_stage  # noqa: E402
-from gtv.thalamus import feature_gain, feature_similarity_field  # noqa: E402
+from gtv.thalamus import feature_gain, feature_similarity_field, pass_through_gain  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 INK, MUTED, GRID = "#1a1a19", "#6b6a63", "#e4e3dc"
@@ -122,11 +122,12 @@ def main() -> None:
 
     noise_T = c6.get("response_noise_T")
 
-    def upper(m1, s2, gain=None, spatial=None, noise=None, noise_seed=0):
+    def upper(m1, s2, gain=None, spatial=None, noise=None, noise_seed=0, pass_gain=None):
         """``gain``: feature-only (n_second,) gain at the attended stage;
         ``spatial``: (target, beta) for a feature-similarity field computed there;
         ``noise``: response-noise scale T at the attended stage (same draws for a
-        given ``noise_seed``, so conditions are compared on identical noise)."""
+        given ``noise_seed``, so conditions are compared on identical noise);
+        ``pass_gain``: (n_first,) gain on the attended stage's pass-through channels."""
         maps = {"V1": m1, "V2": s2}
         prev = s2
         ngen = torch.Generator().manual_seed(noise_seed)
@@ -136,12 +137,12 @@ def main() -> None:
                 out_ = []
                 for i, pb in zip(range(0, len(prev), 256), prev.split(256)):
                     skips = [maps[sc["skip"]][i:i + 256]] if sc["skip"] else None
-                    g, nt = None, None
+                    g, nt, pg = None, None, None
                     if name == tk["attend_stage"]:
-                        g, nt = gain, noise
+                        g, nt, pg = gain, noise, pass_gain
                         if spatial is not None:
                             g = feature_similarity_field(stack[name], pb, templates, spatial[0], spatial[1])
-                    out_.append(stack[name](pb, skips, g, nt, ngen))
+                    out_.append(stack[name](pb, skips, g, nt, ngen, pg))
                 prev = torch.cat(out_)
                 maps[name] = prev
         return maps
@@ -223,19 +224,36 @@ def main() -> None:
             print(f"noise T {T}: no-attention AIT d' {r['dprime']:.2f}", flush=True)
         return
 
-    conditions = {f"beta_{b}": (feature_gain(templates, tk["target"], b), None) for b in c6["betas"]}
-    conditions["wrong_template"] = (feature_gain(templates, c6["wrong_template"], 1.0), None)
-    for b in c6["betas"]:
-        if b > 0:
-            conditions[f"spatial_beta_{b}"] = (None, (tk["target"], b))
-    conditions["spatial_wrong_template"] = (None, (c6["wrong_template"], 1.0))
+    conditions = {f"beta_{b}": (feature_gain(templates, tk["target"], b), None, None) for b in c6["betas"]}
+    conditions["wrong_template"] = (feature_gain(templates, c6["wrong_template"], 1.0), None, None)
+    if c6.get("spatial", True):
+        for b in c6["betas"]:
+            if b > 0:
+                conditions[f"spatial_beta_{b}"] = (None, (tk["target"], b), None)
+        conditions["spatial_wrong_template"] = (None, (c6["wrong_template"], 1.0), None)
+    if c6.get("pass_betas") or c6.get("both_betas"):
+        # gain on the pass-through channels too: bottom-up templates of their energy
+        # (category means over the fitting images), with a fixed power budget
+        idx = names.index(tk["attend_stage"])
+        below = fit_maps["V2" if idx == 0 else names[idx - 1]]
+        with torch.no_grad():
+            e1 = torch.cat([att.features(b)[:, :att.n_first].pow(2).mean((2, 3)) for b in below.split(256)])
+        pass_templates = torch.stack([e1[y_fit == k].mean(0) for k in range(len(CLASSES))])
+        wb = c6.get("wrong_beta", 1.0)
+        for b in c6.get("pass_betas", []):
+            conditions[f"pass_beta_{b}"] = (None, None, pass_through_gain(pass_templates, tk["target"], b))
+        for b in c6.get("both_betas", []):
+            conditions[f"both_beta_{b}"] = (feature_gain(templates, tk["target"], b), None,
+                                           pass_through_gain(pass_templates, tk["target"], b))
+        conditions["both_wrong_template"] = (feature_gain(templates, c6["wrong_template"], wb), None,
+                                             pass_through_gain(pass_templates, c6["wrong_template"], wb))
     results = {}
     reference = None  # AIT features without attention: the fixed readout's training data
     if noise_T is not None:
         results["noiseless_no_attention"] = {"AIT": detection(
             {k: readout(upper(*lows[k]), "AIT") for k in KINDS})}
-    for cname, (gain, spatial) in conditions.items():
-        maps = {k: upper(*lows[k], gain, spatial, noise_T, i) for i, k in enumerate(KINDS)}
+    for cname, (gain, spatial, pgain) in conditions.items():
+        maps = {k: upper(*lows[k], gain, spatial, noise_T, i, pgain) for i, k in enumerate(KINDS)}
         feats_ait = {k: readout(maps[k], "AIT") for k in KINDS}
         if cname == "beta_0.0":
             reference = feats_ait
@@ -244,6 +262,8 @@ def main() -> None:
         results[cname]["AIT_fixed_readout"] = detection(feats_ait, train_feats=reference)
         if gain is not None:
             results[cname]["gain_range"] = [float(gain.min()), float(gain.max())]
+        if pgain is not None:
+            results[cname]["pass_gain_range"] = [float(pgain.min()), float(pgain.max())]
         r = results[cname]["AIT"]
         print(f"{cname}: AIT d' {r['dprime']:.2f} FA(lookalike) {r['fa_lookalike']:.2f} | fixed-readout d' "
               f"{results[cname]['AIT_fixed_readout']['dprime']:.2f} | V4 d' {results[cname]['V4']['dprime']:.2f}",
@@ -269,16 +289,28 @@ def main() -> None:
     cond_names = [k for k in results if k != "noiseless_no_attention"]
     best_beta = max((k for k in results if k.startswith("beta_") and k != "beta_0.0"),
                     key=lambda k: results[k]["AIT"]["dprime"])
-    best_spatial = max((k for k in results if k.startswith("spatial_beta_")),
-                       key=lambda k: results[k]["AIT"]["dprime"])
-    sp_gain = results[best_spatial]["AIT"]["dprime"] - base
-    sp_wrong = results["spatial_wrong_template"]["AIT"]["dprime"] - base
     checks = {
         "templates_category_specific": hits >= ch["min_template_hits"],
         "attention_raises_dprime": results[best_beta]["AIT"]["dprime"] - base >= ch["min_dprime_gain"],
-        "spatial_attention_raises_dprime": sp_gain >= ch["spatial_min_dprime_gain"],
-        "spatial_attention_is_target_specific": sp_gain - sp_wrong >= ch["spatial_min_specificity"],
     }
+    spatial_keys = [k for k in results if k.startswith("spatial_beta_")]
+    if spatial_keys:
+        best_spatial = max(spatial_keys, key=lambda k: results[k]["AIT"]["dprime"])
+        sp_gain = results[best_spatial]["AIT"]["dprime"] - base
+        sp_wrong = results["spatial_wrong_template"]["AIT"]["dprime"] - base
+        checks["spatial_attention_raises_dprime"] = sp_gain >= ch["spatial_min_dprime_gain"]
+        checks["spatial_attention_is_target_specific"] = sp_gain - sp_wrong >= ch["spatial_min_specificity"]
+    combined = [k for k in results if k.startswith(("pass_beta_", "both_beta_"))]
+    if combined:
+        best_comb = max(combined, key=lambda k: results[k]["AIT"]["dprime"])
+        comb_gain = results[best_comb]["AIT"]["dprime"] - base
+        checks["combined_attention_raises_dprime"] = comb_gain >= ch["min_dprime_gain"]
+        both_wrong = results["both_wrong_template"]["AIT"]["dprime"] - base
+        best_both = max((k for k in combined if k.startswith("both_")), key=lambda k: results[k]["AIT"]["dprime"],
+                        default=None)
+        if best_both:
+            checks["combined_is_target_specific"] = (
+                results[best_both]["AIT"]["dprime"] - base - both_wrong >= ch["feature_min_specificity"])
     if "feature_min_specificity" in ch:
         fe_wrong = results["wrong_template"]["AIT"]["dprime"] - base
         checks["attention_is_target_specific"] = (results[best_beta]["AIT"]["dprime"] - base) - fe_wrong >= ch["feature_min_specificity"]
@@ -322,7 +354,7 @@ def main() -> None:
     fig2.savefig(out / "phase6_scenes.png", dpi=120)
 
     report = {"template_source": source, "template_hits": hits, "template_corr": corr.tolist(), "results": results, "tuning_shift": shift,
-              "best_beta": best_beta, "best_spatial": best_spatial, "checks": checks, "passed": all(checks.values())}
+              "best_beta": best_beta, "best_spatial": best_spatial if spatial_keys else None, "checks": checks, "passed": all(checks.values())}
     (out / "report.json").write_text(json.dumps(report, indent=2))
     print(json.dumps({"checks": checks, "best_beta": best_beta}, indent=2))
     print(f"Phase 6 {'PASSED' if report['passed'] else 'FAILED'}; figures in {out}")

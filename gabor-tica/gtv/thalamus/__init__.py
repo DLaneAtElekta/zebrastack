@@ -7,6 +7,6 @@ Modules:
     routing.py      context neighborhoods, pulvinar routing (Phase 8, planned)
 """
 
-from .gain import feature_gain, feature_similarity_field
+from .gain import feature_gain, feature_similarity_field, pass_through_gain
 
-__all__ = ["feature_gain", "feature_similarity_field"]
+__all__ = ["feature_gain", "feature_similarity_field", "pass_through_gain"]

@@ -18,6 +18,16 @@ def feature_gain(templates: torch.Tensor, target: int, beta: float = 1.0) -> tor
     return torch.exp(beta * z)
 
 
+def pass_through_gain(templates: torch.Tensor, target: int, beta: float = 1.0) -> torch.Tensor:
+    """Gain on first-order pass-through channels from category templates (K, C)
+    of their energy: A = exp(beta * z) as ``feature_gain``, then scaled to unit
+    mean power (mean A^2 = 1). Without a divisive normalization after it, an
+    unnormalized gain on channels with additive noise would buy signal-to-noise
+    for free; with the fixed budget, boosting target channels costs the others."""
+    a = feature_gain(templates, target, beta)
+    return a / a.pow(2).mean().sqrt()
+
+
 def feature_similarity_field(stage, x: torch.Tensor, templates: torch.Tensor, target: int,
                              beta: float = 1.0) -> torch.Tensor:
     """Spatial attention field from feature similarity (Treue & Martinez-Trujillo):

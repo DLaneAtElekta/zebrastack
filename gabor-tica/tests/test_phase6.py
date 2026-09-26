@@ -92,3 +92,23 @@ def test_response_noise_bottleneck():
     assert not torch.allclose(noisy[:, : st.n_first], base[:, : st.n_first])
     first_err = (noisy[:, : st.n_first] - base[:, : st.n_first]).std(0).mean()
     assert first_err == pytest.approx(float(st.tica.whitener.parts[0].scale.mean()), rel=0.3)
+
+
+def test_pass_through_gain_budget_and_stage_effect():
+    import torch
+    from gtv.stages import HigherStage
+    from gtv.thalamus import pass_through_gain
+
+    torch.manual_seed(0)
+    t = torch.rand(10, 6)
+    t[3, 2] += 5.0  # channel 2 prefers category 3
+    a = pass_through_gain(t, 3, 2.0)
+    assert torch.isclose(a.pow(2).mean(), torch.tensor(1.0))
+    assert int(a.argmax()) == 2 and a[2] > 1 > a.min()
+    assert torch.allclose(pass_through_gain(t, 3, 0.0), torch.ones(6))
+    # the gain scales only the pass-through part of the stage's features
+    st = HigherStage("V4", in_channels=6, sheet=4, radius=1, first_budget="all")
+    x = torch.randn(3, 6, 8, 8)
+    f0, f1 = st.features(x), st.features(x, pass_gain=a)
+    assert torch.allclose(f1[:, :6], f0[:, :6] * a.view(1, -1, 1, 1), atol=1e-6)
+    assert torch.equal(f1[:, 6:], f0[:, 6:])
