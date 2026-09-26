@@ -1,5 +1,9 @@
 """Phase 6 exit check: thalamic gain from generative templates.
 
+(``template_source: bottomup`` in the config replaces the generated templates
+with the attended stage's own category-mean features: a control that
+separates template quality from the stack.)
+
 1. Top-down path: decoders AIT -> PIT -> V4 fitted on the Phase 5 stack's own
    activity; V4 outputs -> V4 energy channels via the pseudo-inverse of V4's
    whitening + TICA. A category template: clamp AIT to the category's mean
@@ -161,11 +165,30 @@ def main() -> None:
             m = val_maps[tk["attend_stage"]]
             actual.append(att.features_from_outputs(m[y_val == k])[:, sl].mean((0, 2, 3)))
     templates, actual = torch.stack(templates), torch.stack(actual)
+    source = c6.get("template_source", "topdown")
+    if source == "bottomup":
+        # control: category means of the attended stage's own second-order
+        # features (log-normalized pooled energies) for the fitting images,
+        # i.e. an ideal feature template that bypasses the top-down path
+        idx = names.index(tk["attend_stage"])
+        below = fit_maps["V2" if idx == 0 else names[idx - 1]]
+        with torch.no_grad():
+            f = torch.cat([att.features(b)[:, sl].mean((2, 3)) for b in below.split(256)])
+        topdown_templates = templates
+        templates = torch.stack([f[y_fit == k].mean(0) for k in range(len(CLASSES))])
+    elif source != "topdown":
+        raise ValueError(f"unknown template_source {source!r}")
     tc = templates - templates.mean(0)
     ac = actual - actual.mean(0)
     corr = (tc / tc.norm(dim=1, keepdim=True)) @ (ac / ac.norm(dim=1, keepdim=True)).T  # (template k, actual j)
     hits = int((corr.argmax(1) == torch.arange(len(CLASSES))).sum())
-    print(f"templates matching their own category: {hits}/10; diag corr median {corr.diag().median():.2f}", flush=True)
+    print(f"{source} templates matching their own category: {hits}/10; diag corr median {corr.diag().median():.2f}",
+          flush=True)
+    if source == "bottomup":
+        zt = lambda t: (t - t.mean(0)) / (t.std(0) + 1e-6)  # noqa: E731
+        agree = float(torch.nn.functional.cosine_similarity(zt(templates)[tk["target"]],
+                                                            zt(topdown_templates)[tk["target"]], dim=0))
+        print(f"target gain pattern, bottom-up vs top-down (cosine of z): {agree:.2f}", flush=True)
 
     # ---- 2. cluttered scenes
     items, labels = load_fashion_mnist("test", None, raw=True)
@@ -298,7 +321,7 @@ def main() -> None:
     fig2.tight_layout()
     fig2.savefig(out / "phase6_scenes.png", dpi=120)
 
-    report = {"template_hits": hits, "template_corr": corr.tolist(), "results": results, "tuning_shift": shift,
+    report = {"template_source": source, "template_hits": hits, "template_corr": corr.tolist(), "results": results, "tuning_shift": shift,
               "best_beta": best_beta, "best_spatial": best_spatial, "checks": checks, "passed": all(checks.values())}
     (out / "report.json").write_text(json.dumps(report, indent=2))
     print(json.dumps({"checks": checks, "best_beta": best_beta}, indent=2))

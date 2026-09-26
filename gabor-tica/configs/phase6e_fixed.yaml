@@ -1,0 +1,42 @@
+# Phase 6e: the bottom-up template control on the fixed Phase 5b stack (as 6c): the attention gain uses V4's own
+# category-mean second-order features instead of the top-down generated templates.
+# Everything else (task, noise T = 1, conditions, checks) unchanged.
+# Run: python experiments/phase6_attention.py --config configs/phase6e_fixed.yaml
+# Phase 6 with a bottleneck: response noise on everything V4 passes up, on the
+# Phase 5b stack: Poisson-like on the attention-gained energies (before the log),
+# Gaussian on the first-order pass-through (so V2 information cannot bypass it).
+# A first calibration with noise on the energies only showed the bypass
+# (T = 1 only lowered d' from 0.85 to 0.67); the bottleneck was fixed before any
+# attention condition was run.
+# Calibrate first: --calibrate-noise 1 3 10 30, then set response_noise_T to the
+# T whose no-attention AIT d' is closest to 0.5 (rule fixed before calibrating).
+# Needs the Phase 5 stack: run experiments/phase5_hierarchy.py first.
+# Run: python experiments/phase6_attention.py
+base_config: configs/phase5b.yaml
+stack_checkpoint: runs/phase5b/phase5_stages.pt
+
+template_source: bottomup    # control: category-mean V4 features instead of generated templates
+topdown: {n_fit: 2000, kernel: 3, n_iter: 400, lr: 0.02}
+
+task:
+  target: 7                 # sneaker
+  lookalikes: [5, 9]        # sandal, ankle boot: false-alarm test
+  n_per_kind: 600          # 240 in Phase 6; more scenes to cut d' noise
+  n_distractors: 3          # plus the target / lookalike; absent scenes get one more distractor
+  attend_stage: V4
+
+response_noise_T: 1.0         # calibration (no attention, AIT d'): T=1 0.56, 3 0.68, 10 0.72, 30 0.74; closest to 0.5
+
+betas: [0.0, 0.5, 1.0, 2.0]  # 0 = no attention
+wrong_template: 8            # control: attend to "bag" instead (beta 1)
+
+checks:                      # declared before calibrating or running
+  min_template_hits: 8
+  max_noisy_baseline_fraction: 0.8   # the noise must cost information (noisy baseline <= 0.8 x noiseless)
+  # gains are capped by the noiseless ceiling (~0.85 from ~0.5), hence lower bars than Phase 6's 0.3
+  min_dprime_gain: 0.2               # feature gain, best beta vs beta = 0 (retrained readout)
+  feature_min_specificity: 0.1       # ... and by this much more than the wrong-template gain
+  spatial_min_dprime_gain: 0.2       # spatial feature-similarity field, best beta
+  spatial_min_specificity: 0.1
+
+output_dir: runs/phase6e_fixed
