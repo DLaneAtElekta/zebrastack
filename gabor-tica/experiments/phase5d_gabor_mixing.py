@@ -232,6 +232,8 @@ def main() -> None:
         label = f"{v['mode']}_r{v['mix_radius']}_tether{v['tether']:g}"
         if "range" in v or "seq_len" in v:
             label += f"_{rname}_T{t_len}"
+        if "temporal_weight" in v:
+            label += f"_w{v['temporal_weight']:g}"
         st = new_stage(v)
         hist = fit_stage_filters(st, sequences(rname, t_len), None,
                                  temporal_weight=v.get("temporal_weight", c["temporal_weights"][v["mode"]]),
