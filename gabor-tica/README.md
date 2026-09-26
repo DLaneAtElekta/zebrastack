@@ -34,6 +34,7 @@ python experiments/phase5_hierarchy.py --config configs/phase5b_seeds.yaml # fix
 python experiments/phase6_attention.py       # Phase 6: attention from top-down templates (needs the Phase 5 checkpoint; ~20 min)
 python experiments/phase6_attention.py --config configs/phase6b.yaml  # Phase 6 on the 5b stack, 600 scenes/kind (~60 min)
 python experiments/phase6_attention.py --config configs/phase6c.yaml  # Phase 6 with a response-noise bottleneck (~60 min)
+python experiments/phase6_attention.py --config configs/phase6d.yaml  # 6c on the Phase 5f learned stack (~60 min)
 ```
 
 ## Layout
@@ -67,7 +68,7 @@ gabor-tica/
 | FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; no headroom exists at V1–V2 (reconstruction always matches the input ceiling) |
 | 4 | Temporal coherence | ❌ selectivity kept, but invariance gain +0.017 < 0.05; the fixed Design B front end leaves little for W to change |
 | 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance; 5c: learning V4's Gabor-initialized filters gives no reliable gain; 5d: mixing Gabors across V2 sheet neighbors raises unit invariance (+0.06) but not readout tolerance; 5e: training on test-range transforms adds readout tolerance (+0.023), mostly from data diversity, not the temporal term; 5f: a learned mixing stack keeps V4's gain only for rotation and original accuracy at AIT |
-| 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar |
+| 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar; on the learned stack (6d): no effect, templates degrade to 4/10 |
 | 7 | Expectation channel | — |
 | 8 | Context topography and routing (stretch) | — |
 
@@ -1142,6 +1143,40 @@ Findings:
   carry the target through the bottleneck (gain on the pass-through too, or
   at every stage), and category-specific templates need to be restored (7/10
   on the 5b stack).
+
+## Phase 6d: attention on the learned stack (`configs/phase6d.yaml`)
+
+The Phase 6c test (noise bottleneck at V4, sneaker target, same checks)
+on the Phase 5f learned Gabor-mixing stack. Calibration, with the 6c rule
+(the T whose no-attention AIT d′ is closest to 0.5): T = 0.3: 0.34, 1: 0.61,
+3: 0.79, 10: 0.86, so T = 1, as in 6c.
+
+| Condition | AIT d′ (retrained) | AIT d′ (fixed readout) | V4 d′ | False alarms (lookalike) |
+|---|---|---|---|---|
+| noisy, no attention | 0.61 | 0.61 | 0.53 | 0.71 |
+| feature gain β = 0.5 / 1 / 2 | 0.59 / 0.62 / 0.60 | 0.61 / 0.62 / 0.59 | 0.51 / 0.51 / 0.53 | 0.71 / 0.70 / 0.70 |
+| feature gain, wrong template | 0.61 | 0.60 | 0.52 | 0.70 |
+| spatial field β = 0.5 / 1 / 2 | 0.63 / 0.62 / 0.55 | 0.61 / 0.59 / 0.51 | 0.56 / 0.55 / 0.56 | 0.72 / 0.71 / 0.73 |
+| spatial field, wrong template | 0.60 | 0.61 | 0.55 | 0.73 |
+
+Checks: noise costs information ✅; everything else ❌. Templates are
+category-specific for only **4/10** categories (7/10 on the fixed stack), and
+the attention gain no longer shifts tuning toward the target (50% of units,
+chance; 70% in 6c).
+
+Findings:
+- **The learned stack loses 6c's small attention effect, and the
+  templates explain it.** Feature gain at V4 does nothing even at V4
+  (0.51–0.53 vs 0.53; 6c had +0.12 there), and right and wrong templates
+  score the same. With tuning shifts at chance, the gain pattern carries no
+  target information: the top-down path (decoders AIT → PIT → V4, then the
+  pseudo-inverse of V4's whitening + TICA) no longer produces a sneaker-specific
+  V4 energy template.
+- So this run does not test whether the more invariant stack helps
+  attention. It shows that the generated templates are the weak link. The
+  direct control: a template taken bottom-up (V4 energies for target images
+  vs all images), which bypasses the top-down path and isolates template
+  quality from the stack.
 
 ## Related code elsewhere in this repo
 
