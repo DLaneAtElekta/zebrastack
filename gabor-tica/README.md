@@ -29,6 +29,8 @@ python experiments/phase5_hierarchy.py --config configs/phase5b.yaml  # Phase 5b
 python experiments/phase5c_learned_filters.py                         # Phase 5c: learned V4 filters, needs 5b (~70 min)
 python experiments/phase5d_gabor_mixing.py                            # Phase 5d: Gabor mixing across V2 neighbors, needs 5b (~2.5 h)
 python experiments/phase5d_gabor_mixing.py --config configs/phase5e.yaml  # Phase 5e: test-range transforms, sequences (~2.5 h)
+python experiments/phase5_hierarchy.py --config configs/phase5f.yaml       # Phase 5f: learned mixing stack, needs 5e (~1.5 h)
+python experiments/phase5_hierarchy.py --config configs/phase5b_seeds.yaml # fixed-stack reference with refit seeds (~1 h)
 python experiments/phase6_attention.py       # Phase 6: attention from top-down templates (needs the Phase 5 checkpoint; ~20 min)
 python experiments/phase6_attention.py --config configs/phase6b.yaml  # Phase 6 on the 5b stack, 600 scenes/kind (~60 min)
 python experiments/phase6_attention.py --config configs/phase6c.yaml  # Phase 6 with a response-noise bottleneck (~60 min)
@@ -64,7 +66,7 @@ gabor-tica/
 | FE-2 | Learned per-channel precision | ⚠️ 2 of 4 checks; precision learns cleanly with V1 normalization, but doesn't fix the second-order readout |
 | FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; no headroom exists at V1–V2 (reconstruction always matches the input ceiling) |
 | 4 | Temporal coherence | ❌ selectivity kept, but invariance gain +0.017 < 0.05; the fixed Design B front end leaves little for W to change |
-| 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance; 5c: learning V4's Gabor-initialized filters gives no reliable gain; 5d: mixing Gabors across V2 sheet neighbors raises unit invariance (+0.06) but not readout tolerance; 5e: training on test-range transforms adds readout tolerance (+0.023), mostly from data diversity, not the temporal term |
+| 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance; 5c: learning V4's Gabor-initialized filters gives no reliable gain; 5d: mixing Gabors across V2 sheet neighbors raises unit invariance (+0.06) but not readout tolerance; 5e: training on test-range transforms adds readout tolerance (+0.023), mostly from data diversity, not the temporal term; 5f: a learned mixing stack keeps V4's gain only for rotation and original accuracy at AIT |
 | 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar |
 | 7 | Expectation channel | — |
 | 8 | Context topography and routing (stretch) | — |
@@ -931,6 +933,57 @@ Findings:
   A contrastive or slow-feature objective, which directly rewards equal
   responses across the full range, would be the stronger test of the
   temporal hypothesis.
+
+## Phase 5f: the learned Gabor-mixing stack (`configs/phase5f.yaml`, `configs/phase5b_seeds.yaml`)
+
+V4, PIT and AIT are all Gabor-mixing stages (radius 1 on the stage below's
+TICA sheet, τ = 0.1, bubbles, matched-range pairs):
+- **V4:** the Phase 5e mixing, loaded.
+- **PIT and AIT:** trained greedily the same way, on the same 1,000 pairs
+  propagated up the stack. AIT uses offset 1, since its input maps are 4 × 4.
+- **Fitting:** each stage's whitening + TICA is fit as in Phase 5b.
+- **Reference:** the Phase 5b fixed stack rerun with the same 3 refit seeds
+  (`phase5b_seeds.yaml`).
+- **Mixing drift / change on neighbor channels:** V4 0.42 / 70%, PIT 0.39 /
+  76%, AIT 0.36 / 69%.
+
+Matched readout, learned minus fixed stack (mean ± SE over 3 refit seeds):
+
+| Stage | Original | Shift 6 px | Rotate 15° | Scale 0.85 | Mean transformed (learned / fixed) |
+|---|---|---|---|---|---|
+| V4 | +0.007 ± 0.003 | +0.025 ± 0.009 | +0.042 ± 0.017 | +0.001 ± 0.005 | 0.750 / 0.727 |
+| PIT | +0.008 ± 0.004 | −0.021 ± 0.005 | +0.021 ± 0.015 | +0.021 ± 0.007 | 0.728 / 0.721 |
+| AIT | +0.010 ± 0.002 | −0.025 ± 0.019 | +0.027 ± 0.023 | +0.008 ± 0.008 | 0.720 / 0.717 |
+
+Learned stack, absolute (3-seed means; V2 0.877 / 0.799 / 0.695 / 0.771):
+V4 0.874 / 0.794 / 0.664 / 0.791, PIT 0.873 / 0.767 / 0.630 / 0.786,
+AIT 0.865 / 0.745 / 0.643 / 0.773.
+
+AIT sheet clustering, learned vs fixed: category neighbor agreement 0.383 vs
+0.347 (shuffled nulls 0.136 / 0.123, both 2.8× the null); superordinate 0.635
+vs 0.584 (null 0.341 for both).
+
+Checks (as Phase 5b, on seed means), the same for both stacks: AIT decoding
+above chance ✅; AIT category clusters ✅; AIT accuracy ≥ V2 − 0.01 ❌
+(learned 0.865, fixed 0.855, V2 0.877); AIT rotation ≥ V2 ❌ (0.643 / 0.616
+vs 0.695).
+
+Findings:
+- **Learned mixing helps at every stage for original accuracy (+0.007
+  to +0.010, > 2 SE)** and, less reliably, for rotation (+0.02 to +0.04, about
+  1.5–2.5 SE). AIT on the learned stack is 0.012 below V2, against 0.022
+  below for the fixed stack.
+- **The shift gain does not survive above V4.** PIT and AIT lose shift
+  tolerance relative to the fixed stack (−0.02). So averaged over the three
+  transforms, the learned upper stages end where the fixed ones do (AIT 0.720
+  vs 0.717). V4's +0.023 is not carried up.
+- **Tolerance still declines above V2 in both stacks.** A likely reason (not
+  yet tested): the learned mixing sees only a 3 × 3 sheet neighborhood and ±2
+  cells of position, which at PIT and AIT (8 × 8 and 4 × 4 maps) is small
+  compared with a 6 px shift expressed in their coarse coordinates.
+- **Superordinate clustering is stronger on the learned AIT** (0.635 vs 0.584,
+  same null): its units group categories more coherently.
+- The curvature probe is still saturated (all ≥ 0.99).
 
 ## Phase 6 results (`configs/phase6.yaml`)
 
