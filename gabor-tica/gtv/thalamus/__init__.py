@@ -9,7 +9,8 @@ Modules:
 
 from .expectation import expectation
 from .gain import feature_gain, feature_similarity_field, pass_through_gain
-from .routing import route_window, saliency_map, select_location, template_match_map
+from .routing import (learned_priority, route_window, saliency_map, select_location, select_topk,
+                      template_match_map)
 
-__all__ = ["expectation", "feature_gain", "feature_similarity_field", "pass_through_gain", "route_window",
-           "saliency_map", "select_location", "template_match_map"]
+__all__ = ["expectation", "feature_gain", "feature_similarity_field", "pass_through_gain", "learned_priority",
+           "route_window", "saliency_map", "select_location", "select_topk", "template_match_map"]

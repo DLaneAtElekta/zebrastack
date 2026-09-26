@@ -41,6 +41,8 @@ python experiments/phase6_attention.py --config configs/phase6f.yaml          # 
 python experiments/phase6_attention.py --config configs/phase7.yaml           # Phase 7: expectation channel (~60 min)
 python experiments/phase6_attention.py --config configs/phase7b.yaml          # Phase 7b: hierarchical expectation (~60 min)
 python experiments/phase6_attention.py --config configs/phase7c.yaml          # Phase 7c: 7b with informed readouts (~60 min)
+python experiments/phase8_routing.py                                          # Phase 8: routing (~20 min)
+python experiments/phase8_routing.py --config configs/phase8b.yaml            # Phase 8b: learned priority, glimpses
 ```
 
 ## Layout
@@ -1462,6 +1464,57 @@ Findings:
   neither can separate what the pooled representation has merged. That is
   the problem the plan's Phase 8 routing (selecting which region feeds the
   next stage, object-centered processing) is meant to solve.
+
+## Phase 8 results: pulvinar-style routing (`configs/phase8.yaml`)
+
+**Build** (`gtv.thalamus.routing`): a shifter-style gate.
+- A priority map on V4's 8 × 8 sheet picks one location.
+- A 28 px window around it (one item) is cut from the scene, upsampled 2×
+  and centered (the format the stack was fitted on), and the stack runs again
+  on it.
+- Priority maps: template match (projection of the local V4 features on the
+  sneaker template's direction, with templates taken at the item's cell in
+  single-item scenes) and saliency (local feature energy); plus random and
+  oracle (the task item's true center) locations.
+- Test (`tests/test_phase8.py`): routing to a known item's center returns
+  exactly the item, upsampled and centered.
+
+**Diagnostic** (noiseless, pooled scene readout, informed readout):
+
+| Scene | V4: d′ vs lookalike | AIT: d′ vs lookalike | AIT: d′ present vs absent |
+|---|---|---|---|
+| single object | 2.89 | 2.72 | 6.17 |
+| object + 3 distractors | 0.44 | 0.30 | 0.66 |
+
+**Routing** (AIT, informed readout; localization = routed center within
+10 px of the target in present scenes):
+
+| Condition | Noiseless: d′ vs lookalike / false alarms | Noise T = 1: d′ vs lookalike / false alarms | Localization |
+|---|---|---|---|
+| pooled (no routing) | 0.30 / 0.73 | 0.21 / 0.74 | — |
+| routed, template match | 0.14 / 0.80 | 0.17 / 0.76 | 0.13 / 0.14 |
+| routed, saliency | 0.12 / 0.76 | 0.01 / 0.79 | 0.00 |
+| routed, random | 0.06 / 0.78 | 0.13 / 0.73 | 0.20 / 0.18 |
+| routed, **oracle** | **1.42 / 0.29** | **1.25 / 0.34** | 1.00 |
+
+Checks (noisy): routing raises discrimination by ≥ 0.2 ❌; lowers false
+alarms by ≥ 0.1 ❌; localizes the target ≥ 0.6 ❌; template beats saliency ✅.
+
+Findings:
+- **Clutter is the limit Phases 6–7 ran into:** one object, d′ 2.7 at
+  AIT; the same object among three others, 0.30. The stack keeps identity
+  for an isolated object and loses it when four are pooled.
+- **Routing to the right place solves it:** oracle routing recovers d′ 1.25
+  and cuts false alarms from 0.74 to 0.34 under the bottleneck, the largest
+  effect of any Phase 6–8 mechanism.
+- **Selecting the place is the problem.**
+  - The template map finds a lone sneaker (67% in a follow-up check) but in
+    clutter lands on it only 13–14% of the time, worse than random: other
+    items match the shoe-general template better.
+  - Saliency lands on a border cell every time, a padding artifact (V4 was
+    fitted without its edge cells). With the border masked it localizes 34% of
+    single sneakers.
+  - Phase 8b addresses both.
 
 ## Related code elsewhere in this repo
 

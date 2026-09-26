@@ -9,7 +9,11 @@ instead of pooling it with the rest of the scene.
 Priority maps:
 - template match: how well the stage's local second-order features match
   the target template's deviation from the mean template (attention-guided);
-- saliency: the stage's local second-order energy, whatever the features.
+- saliency: the stage's local second-order energy, whatever the features;
+- learned: a linear per-cell detector of the target on the stage's features,
+  trained on scenes with known item positions (Phase 8b).
+With ``select_topk`` the gate visits several locations in turn (serial
+glimpses), each processed object-centered.
 """
 
 import torch
@@ -31,12 +35,46 @@ def saliency_map(features: torch.Tensor) -> torch.Tensor:
     return f.pow(2).sum(1)
 
 
-def select_location(priority: torch.Tensor, image_size: int) -> torch.Tensor:
-    """(B, H, W) priority map -> (B, 2) pixel center (y, x) of its argmax cell."""
+def _masked(priority: torch.Tensor, border: int) -> torch.Tensor:
+    if not border:
+        return priority
+    p = priority.clone()
+    p[:, :border], p[:, -border:], p[:, :, :border], p[:, :, -border:] = (-float("inf"),) * 4
+    return p
+
+
+def select_location(priority: torch.Tensor, image_size: int, border: int = 0) -> torch.Tensor:
+    """(B, H, W) priority map -> (B, 2) pixel center (y, x) of its argmax cell.
+    ``border``: ignore this many cells at the edge (padding artifacts; the
+    stages are fitted without them)."""
+    return select_topk(priority, image_size, 1, border)[:, 0]
+
+
+def select_topk(priority: torch.Tensor, image_size: int, k: int, border: int = 0,
+                min_sep: int = 2) -> torch.Tensor:
+    """(B, H, W) -> (B, k, 2) pixel centers of the k highest cells, greedily
+    suppressing cells within ``min_sep`` (Chebyshev, in cells) of a chosen one
+    (serial glimpses that do not revisit the same object)."""
     b, h, w = priority.shape
-    idx = priority.flatten(1).argmax(1)
-    cy, cx = idx // w, idx % w
-    return torch.stack([(cy.float() + 0.5) * image_size / h, (cx.float() + 0.5) * image_size / w], 1)
+    p = _masked(priority, border).clone()
+    yy, xx = torch.meshgrid(torch.arange(h), torch.arange(w), indexing="ij")
+    out = []
+    for _ in range(k):
+        idx = p.flatten(1).argmax(1)
+        cy, cx = idx // w, idx % w
+        out.append(torch.stack([(cy.float() + 0.5) * image_size / h, (cx.float() + 0.5) * image_size / w], 1))
+        near = ((yy.view(1, h, w) - cy.view(-1, 1, 1)).abs() < min_sep) & \
+               ((xx.view(1, h, w) - cx.view(-1, 1, 1)).abs() < min_sep)
+        p = p.masked_fill(near, -float("inf"))
+    return torch.stack(out, 1)
+
+
+def learned_priority(features: torch.Tensor, weight: torch.Tensor, bias: float,
+                     mean: torch.Tensor, std: torch.Tensor) -> torch.Tensor:
+    """(B, C, H, W) -> (B, H, W) logit of a linear per-cell detector (trained on
+    standardized cell feature vectors, e.g. in experiments/phase8_routing.py)."""
+    z = (features - mean.view(1, -1, 1, 1)) / std.view(1, -1, 1, 1)
+    return torch.einsum("c,bchw->bhw", weight, z) + bias
 
 
 def route_window(images: torch.Tensor, centers: torch.Tensor, window: int = 28, scale: float = 2.0,

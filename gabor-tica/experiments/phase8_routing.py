@@ -16,6 +16,12 @@ from the scene, rescales it to the stack's training scale and centers it
    center of the task item). Readouts as Phase 7c: standard (present vs
    absent) and informed (lookalikes among the negatives), on held-out scenes.
    Localization: routed center within ``loc_tolerance`` px of the target.
+3. Phase 8b (``glimpses`` in the config): border cells masked; a learned
+   priority map (a linear per-cell sneaker detector on V4 features, trained on
+   separate scenes of training items with known positions); serial glimpses
+   (top-k locations with suppression), each routed window scored by an
+   item-level classifier trained on routed training windows, scene score =
+   max over glimpses.
 
     python experiments/phase8_routing.py [--config configs/phase8.yaml]
 """
@@ -36,7 +42,9 @@ from gtv.config import load_config  # noqa: E402
 from gtv.data import CLASSES, load_fashion_mnist  # noqa: E402
 from gtv.probes.sets import clutter_scene  # noqa: E402
 from gtv.stages import V2Stage, build_higher_stack, build_stage  # noqa: E402
-from gtv.thalamus import route_window, saliency_map, select_location, template_match_map  # noqa: E402
+from gtv.probes.decode import fit_logistic  # noqa: E402
+from gtv.thalamus import (learned_priority, route_window, saliency_map, select_location, select_topk,  # noqa: E402
+                          template_match_map)
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "experiments"))
@@ -202,6 +210,111 @@ def main() -> None:
                   f"d'(vs lookalike) {r['informed']['dprime_lookalike']:.2f}"
                   + (f" | localization {r['localization']:.2f}" if "localization" in r else ""), flush=True)
 
+    # ---- 3. Phase 8b: learned priority, border mask, serial glimpses
+    gl = c8.get("glimpses")
+    if gl:
+        border = gl["border"]
+        tr_items, tr_labels = items_tr, labels_tr
+        gtr = torch.Generator().manual_seed(gl["train_seed"])
+
+        def train_scene():
+            cats = torch.randint(len(CLASSES), (tk["n_distractors"] + 1,), generator=gtr).tolist()
+            cats[0] = tk["target"] if float(torch.rand(1, generator=gtr)) < 0.5 else cats[0]  # half contain a sneaker
+            its = [tr_items[torch.nonzero(tr_labels == c).flatten()[
+                int(torch.randint(int((tr_labels == c).sum()), (1,), generator=gtr))]] for c in cats]
+            sc, ctr = clutter_scene(its, size, gtr, return_positions=True)
+            return sc, ctr, cats
+
+        made = [train_scene() for _ in range(gl["n_train_scenes"])]
+        tr_imgs = torch.stack([m[0] for m in made]).unsqueeze(1)
+
+        def scores_to_metrics(sc):
+            """sc: {kind: (N,) scene scores}; all task scenes are held out."""
+            sp, sa, sl_ = sc["present"], sc["absent"], sc["lookalike"]
+            thr = torch.quantile(sp, 0.2)
+            dp = lambda a, b: float((a.mean() - b.mean()) / (0.5 * (a.var() + b.var())).sqrt())  # noqa: E731
+            return {"dprime": dp(sp, sa), "dprime_lookalike": dp(sp, sl_),
+                    "fa_lookalike": float((sl_ > thr).float().mean()), "fa_absent": float((sa > thr).float().mean())}
+
+        def fit_scorer(x, y):
+            mu, sd = x.mean(0), x.std(0) + 1e-6
+            with torch.enable_grad():
+                model = fit_logistic((x - mu) / sd, y, 2, l2=1e-2)
+
+            def score(f):
+                with torch.no_grad():
+                    o = model((f - mu) / sd)
+                return o[:, 1] - o[:, 0]
+            return score, model, mu, sd
+
+        results["glimpses"] = {}
+        for noise_label, T in (("noiseless", None), (f"noise_T{c8['response_noise_T']:g}", c8["response_noise_T"])):
+            # learned per-cell detector on the (noisy) V4 features of the training scenes
+            tf_, _ = run(tr_imgs, T, 500)
+            h8 = tf_.shape[-1]
+            pos = torch.zeros(len(made), h8, h8, dtype=torch.bool)
+            for i, (_, ctr, cats) in enumerate(made):
+                for (y, x), c in zip(ctr, cats):
+                    if c == tk["target"]:
+                        pos[i, min(int(y // cell), h8 - 1), min(int(x // cell), h8 - 1)] = True
+            interior = torch.zeros(h8, h8, dtype=torch.bool)
+            interior[border:h8 - border, border:h8 - border] = True
+            cells = tf_.permute(0, 2, 3, 1)[:, interior]  # (N, n_int, C)
+            labs = pos[:, interior]
+            xp, xn = cells[labs], cells[~labs]
+            xn = xn[torch.randperm(len(xn), generator=gtr)[: 3 * len(xp)]]
+            _, det, dmu, dsd = fit_scorer(torch.cat([xp, xn]), torch.cat([torch.ones(len(xp)), torch.zeros(len(xn))]).long())
+            w_det = (det.weight[1] - det.weight[0]).detach()
+            b_det = float((det.bias[1] - det.bias[0]).detach())
+            # item classifier on routed windows at every item of the training scenes
+            ctr_all = torch.tensor([c for m in made for c in m[1]])
+            cat_all = torch.tensor([c for m in made for c in m[2]])
+            img_idx = torch.tensor([i for i, m in enumerate(made) for _ in m[1]])
+            win = route_window(tr_imgs[img_idx], ctr_all, rt["window"], rt["scale"])
+            wf = readout(run(win, T, 600)[1], "AIT")
+            is_t = (cat_all == tk["target"]).long()
+            informed_score, *_ = fit_scorer(wf, is_t)
+            keep = ~torch.isin(cat_all, torch.tensor(tk["lookalikes"]))  # standard: never sees a lookalike
+            standard_score, *_ = fit_scorer(wf[keep], is_t[keep])
+
+            first = {k: run(scenes[k][0], T, i)[0] for i, k in enumerate(KINDS)}
+            kmax = max(gl["k"])
+            prio = {
+                "learned": lambda f: learned_priority(f, w_det, b_det, dmu, dsd),
+                "template": lambda f: template_match_map(f, templates, tk["target"]),
+                "saliency": saliency_map,
+            }
+            gres = {}
+            for pname in list(prio) + ["random", "oracle"]:
+                per_kind, loc_hits = {}, None
+                for i, k in enumerate(KINDS):
+                    n = len(first[k])
+                    if pname == "oracle":
+                        cen = scenes[k][1].view(n, 1, 2)
+                    elif pname == "random":
+                        lo, hi = border * cell + cell / 2, size - border * cell - cell / 2
+                        cen = lo + torch.rand(n, kmax, 2, generator=gr) * (hi - lo)
+                    else:
+                        cen = select_topk(prio[pname](first[k]), size, kmax, border)
+                    kk = cen.shape[1]
+                    win = route_window(scenes[k][0].repeat_interleave(kk, 0), cen.reshape(-1, 2), rt["window"], rt["scale"])
+                    f = readout(run(win, T, 700 + i)[1], "AIT")
+                    per_kind[k] = {"informed": informed_score(f).view(n, kk), "standard": standard_score(f).view(n, kk)}
+                    if k == "present":
+                        loc_hits = ((cen - scenes["present"][1].view(n, 1, 2)).norm(dim=2) <= rt["loc_tolerance"])
+                ks = [1] if pname == "oracle" else gl["k"]
+                for kg in ks:
+                    r = {ro: scores_to_metrics({k: per_kind[k][ro][:, :kg].amax(1) for k in KINDS})
+                         for ro in ("informed", "standard")}
+                    r["localization_any"] = float(loc_hits[:, :kg].any(1).float().mean())
+                    gres[f"{pname}_k{kg}"] = r
+                    print(f"{noise_label} glimpses {pname} k={kg}: informed d'(vs lookalike) "
+                          f"{r['informed']['dprime_lookalike']:.2f} FA(lookalike) {r['informed']['fa_lookalike']:.2f} "
+                          f"d'(vs absent) {r['informed']['dprime']:.2f} | standard FA(lookalike) "
+                          f"{r['standard']['fa_lookalike']:.2f} | target within any glimpse {r['localization_any']:.2f}",
+                          flush=True)
+            results["glimpses"][noise_label] = gres
+
     # ---- checks (declared before running), on the noisy condition
     ch = c8["checks"]
     rn = results["routing"][f"noise_T{c8['response_noise_T']:g}"]
@@ -237,6 +350,15 @@ def main() -> None:
     fig.tight_layout()
     fig.savefig(out / "phase8_routing.png", dpi=120)
 
+    if gl:
+        gn = results["glimpses"][f"noise_T{c8['response_noise_T']:g}"]
+        routed = [k for k in gn if not k.startswith("oracle")]
+        best = max(routed, key=lambda k: gn[k]["informed"]["dprime_lookalike"])
+        checks["glimpses_raise_discrimination"] = (
+            gn[best]["informed"]["dprime_lookalike"] - base_d >= ch["min_discrimination_gain"])
+        checks["glimpses_lower_false_alarms"] = gn[best]["informed"]["fa_lookalike"] <= base_fa - ch["min_fa_drop"]
+        checks["learned_priority_localizes"] = gn["learned_k1"]["localization_any"] >= ch["min_localization"]
+        results["glimpses_best"] = best
     report = {"results": results, "checks": checks, "passed": all(checks.values())}
     (out / "report.json").write_text(json.dumps(report, indent=2))
     print(json.dumps({"checks": checks}, indent=2))

@@ -33,3 +33,17 @@ def test_select_location_and_priority_maps():
     f[0, 0, 6, 6] = 5.0  # something else, stronger, at (6, 6)
     assert int(template_match_map(f, templates, 1).flatten().argmax()) == 3 * 8 + 3
     assert int(saliency_map(f).flatten().argmax()) == 6 * 8 + 6
+
+
+def test_topk_glimpses_suppress_neighbors_and_border():
+    from gtv.thalamus import learned_priority, select_topk
+
+    pr = torch.zeros(1, 8, 8)
+    pr[0, 0, 0] = 9.0  # border artifact
+    pr[0, 3, 3], pr[0, 3, 4], pr[0, 6, 2] = 5.0, 4.9, 3.0  # object at (3, 3), its neighbor, a second object
+    c = select_topk(pr, 64, 2, border=1)
+    assert torch.equal(c[0], torch.tensor([[28.0, 28.0], [52.0, 20.0]]))  # skips border and the neighbor
+    f = torch.randn(2, 4, 8, 8)
+    w = torch.tensor([1.0, 0.0, 0.0, 0.0])
+    lp = learned_priority(f, w, 0.5, torch.zeros(4), torch.ones(4))
+    assert torch.allclose(lp, f[:, 0] + 0.5)

@@ -1,0 +1,38 @@
+# Phase 8b: routing with a border mask, a learned priority map (per-cell sneaker detector
+# on V4 features, trained on training-item scenes) and serial glimpses scored by an
+# item classifier (max over glimpses). Also reruns the Phase 8 conditions.
+# Run: python experiments/phase8_routing.py --config configs/phase8b.yaml
+base_config: configs/phase5b.yaml
+stack_checkpoint: runs/phase5b/phase5_stages.pt
+
+templates_per_class: 200     # single-item training scenes per category (templates at scene scale)
+
+task:                        # as Phase 6c-7c
+  target: 7                  # sneaker
+  lookalikes: [5, 9]         # sandal, ankle boot
+  n_per_kind: 600
+  n_distractors: 3
+
+diagnostic_distractors: [0, 3]   # single objects vs the task's clutter (pooled, noiseless)
+
+response_noise_T: 1.0        # the Phase 6c bottleneck at V4 (both passes)
+
+routing:
+  window: 28                 # px: one item
+  scale: 2.0                 # items were 2x upsampled when the stack was fitted
+  loc_tolerance: 10.0        # px from the target's center counts as localized
+
+glimpses:                    # Phase 8b
+  border: 1                  # ignore V4's edge cells (padding artifacts; V4 was fitted without them)
+  k: [1, 2, 4]               # serial glimpses (top-k with suppression); scene score = max over glimpses
+  n_train_scenes: 1500       # training-item scenes (half with a sneaker) for the cell detector and item classifier
+  train_seed: 21
+
+checks:                      # declared before running; on the noisy condition, vs pooled (Phase 7 reference)
+  min_discrimination_gain: 0.2   # informed sneaker-vs-lookalike d'
+  min_fa_drop: 0.1               # informed lookalike false alarms
+  min_localization: 0.6          # template routing lands on the target in present scenes
+                                 # plus: template routing beats saliency routing on that d'
+                                 # 8b: the best glimpse condition on the same bars; learned k=1 localization
+
+output_dir: runs/phase8b
