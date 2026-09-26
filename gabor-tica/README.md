@@ -35,6 +35,8 @@ python experiments/phase6_attention.py       # Phase 6: attention from top-down 
 python experiments/phase6_attention.py --config configs/phase6b.yaml  # Phase 6 on the 5b stack, 600 scenes/kind (~60 min)
 python experiments/phase6_attention.py --config configs/phase6c.yaml  # Phase 6 with a response-noise bottleneck (~60 min)
 python experiments/phase6_attention.py --config configs/phase6d.yaml  # 6c on the Phase 5f learned stack (~60 min)
+python experiments/phase6_attention.py --config configs/phase6e_fixed.yaml    # bottom-up template control, fixed stack
+python experiments/phase6_attention.py --config configs/phase6e_learned.yaml  # bottom-up template control, learned stack
 ```
 
 ## Layout
@@ -68,7 +70,7 @@ gabor-tica/
 | FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; no headroom exists at V1–V2 (reconstruction always matches the input ceiling) |
 | 4 | Temporal coherence | ❌ selectivity kept, but invariance gain +0.017 < 0.05; the fixed Design B front end leaves little for W to change |
 | 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance; 5c: learning V4's Gabor-initialized filters gives no reliable gain; 5d: mixing Gabors across V2 sheet neighbors raises unit invariance (+0.06) but not readout tolerance; 5e: training on test-range transforms adds readout tolerance (+0.023), mostly from data diversity, not the temporal term; 5f: a learned mixing stack keeps V4's gain only for rotation and original accuracy at AIT |
-| 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar; on the learned stack (6d): no effect, templates degrade to 4/10 |
+| 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar; on the learned stack (6d): no effect, templates degrade to 4/10; with ideal bottom-up templates (6e) at most +0.11, so templates are not the main limit |
 | 7 | Expectation channel | — |
 | 8 | Context topography and routing (stretch) | — |
 
@@ -1177,6 +1179,55 @@ Findings:
   direct control: a template taken bottom-up (V4 energies for target images
   vs all images), which bypasses the top-down path and isolates template
   quality from the stack.
+
+## Phase 6e: bottom-up template control (`configs/phase6e_fixed.yaml`, `configs/phase6e_learned.yaml`)
+
+Is the weak attention effect a template problem? Here the gain uses **ideal
+templates**: the category means of V4's own second-order features (log
+normalized pooled energies) over the 2,000 fitting images, bypassing the
+top-down path. Everything else (task, noise T = 1, conditions, checks) is as
+in 6c (fixed stack) and 6d (learned stack). The bottom-up templates are
+category-specific for 10/10 categories on both stacks (median diagonal
+correlation 0.92 / 0.91). The sneaker gain pattern agrees only partly with the
+generated one: cosine of the z-patterns 0.49 on the fixed stack, 0.36 on the
+learned stack.
+
+AIT d′ (retrained readout) by condition; V4 d′ in parentheses:
+
+| Condition | Fixed, top-down (6c) | Fixed, bottom-up | Learned, top-down (6d) | Learned, bottom-up |
+|---|---|---|---|---|
+| no attention | 0.56 (0.51) | 0.56 (0.51) | 0.61 (0.53) | 0.61 (0.53) |
+| feature β = 0.5 | 0.62 (0.53) | 0.59 (0.50) | 0.59 (0.51) | 0.64 (0.54) |
+| feature β = 1 | 0.64 (0.57) | 0.58 (0.53) | 0.62 (0.51) | 0.66 (0.55) |
+| feature β = 2 | 0.63 (0.63) | **0.67 (0.63)** | 0.60 (0.53) | 0.65 (0.58) |
+| wrong template (bag, β = 1) | 0.53 (0.54) | 0.55 (0.52) | 0.61 (0.52) | 0.60 (0.51) |
+| spatial field, best β | 0.55 | 0.55 | 0.63 | 0.60 |
+| lookalike false alarms, best feature β | 0.72 | **0.66** | 0.70 | 0.71 |
+| units shifting tuning toward target (β = 1) | 70% | 55% | 50% | 61% |
+
+Checks, bottom-up: templates category-specific ✅ (both); feature
+attention raises d′ by ≥ 0.2 ❌ (fixed +0.11, learned +0.05); feature attention
+target-specific by ≥ 0.1 ✅ fixed (0.12), ❌ learned (0.06); spatial raise and
+spatial specificity ❌; noise costs information ✅.
+
+Findings:
+- **Templates are not the main limit.** Even ideal category templates
+  raise AIT d′ by at most 0.11 (fixed stack, β = 2, with the first reduction in
+  lookalike false alarms, 0.73 → 0.66). The generated templates on the same
+  stack reached +0.08. So the ceiling of this attention set-up is low
+  whatever the template: the gain acts only on V4's second-order energies,
+  while the noisy pass-through channels, which attention does not touch, carry
+  much of the target signal (the 6c diagnosis).
+- **The learned stack's null (6d) was partly the templates.** With ideal
+  templates it shows a small effect (+0.04 to +0.05, V4 +0.05), smaller than the
+  fixed stack's, and not target-specific beyond the scatter (0.06). The more
+  invariant learned stack is not more attention-friendly.
+- **The spatial field does nothing in any configuration**, even with ideal
+  templates. Feature-similarity maps at V4's 8 × 8 resolution do not single out
+  the target in these scenes.
+- Next, from these results: extend the gain to the channels that carry the
+  target through the bottleneck (the first-order pass-through), or apply it at
+  every stage.
 
 ## Related code elsewhere in this repo
 
