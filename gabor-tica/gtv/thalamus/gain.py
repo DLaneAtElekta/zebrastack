@@ -10,11 +10,16 @@ Gabor energies, applied before divisive normalization (``HigherStage``'s
 import torch
 
 
-def feature_gain(templates: torch.Tensor, target: int, beta: float = 1.0) -> torch.Tensor:
+def feature_gain(templates: torch.Tensor, target: int, beta: float = 1.0,
+                 reference: list[int] | None = None) -> torch.Tensor:
     """Per-channel gain A = exp(beta * z) from category templates (K, C): z is
     how far the target's template exceeds the mean template on each channel,
-    in units of the across-category spread. beta = 0 gives A = 1 (no attention)."""
-    z = (templates[target] - templates.mean(0)) / (templates.std(0) + 1e-6)
+    in units of the across-category spread. beta = 0 gives A = 1 (no attention).
+    ``reference``: categories whose mean template is subtracted instead of all
+    (e.g. the target's superordinate group, for attention to what is specific
+    to the target within its group)."""
+    ref = templates if reference is None else templates[reference]
+    z = (templates[target] - ref.mean(0)) / (templates.std(0) + 1e-6)
     return torch.exp(beta * z)
 
 

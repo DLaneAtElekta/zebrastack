@@ -31,7 +31,7 @@ import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
 from gtv.config import load_config  # noqa: E402
-from gtv.data import CLASSES, load_fashion_mnist  # noqa: E402
+from gtv.data import CLASSES, SUPERORDINATE, load_fashion_mnist  # noqa: E402
 from gtv.generative import decode_down, fit_topdown  # noqa: E402
 from gtv.probes.decode import fit_logistic, linear_decode, train_test_split  # noqa: E402
 from gtv.probes.sets import clutter_scene  # noqa: E402
@@ -250,14 +250,33 @@ def main() -> None:
                                              pass_through_gain(pass_templates, c6["wrong_template"], wb), None)
     ex = c6.get("expectation")
     if ex:
-        # Phase 7: expectation (predictive subtraction), alone and with attention at beta ex["with_beta"]
+        # Phase 7: expectation (predictive subtraction), alone and with attention at beta ex["with_beta"].
+        # ex["predict"]: a superordinate group whose shared pattern is predicted (Phase 7b); default the target
+        pred = SUPERORDINATE[ex["predict"]] if ex.get("predict") else None
+        mt = ex.get("match", "zscore")
         att_gain = feature_gain(templates, tk["target"], ex["with_beta"])
-        for a in ex["alphas"]:
-            conditions[f"expect_a{a}"] = (None, None, None, expectation(templates, tk["target"], a))
-            conditions[f"att_expect_a{a}"] = (att_gain, None, None, expectation(templates, tk["target"], a))
         a0 = ex["control_alpha"]
-        conditions["att_expect_uniform"] = (att_gain, None, None, expectation(templates, tk["target"], a0, spatial=False))
-        conditions["att_expect_wrong"] = (att_gain, None, None, expectation(templates, c6["wrong_template"], a0))
+        for a in ex["alphas"]:
+            if ex.get("alone", True):
+                conditions[f"expect_a{a}"] = (None, None, None, expectation(templates, tk["target"], a, predict=pred, match=mt))
+            conditions[f"att_expect_a{a}"] = (att_gain, None, None, expectation(templates, tk["target"], a, predict=pred, match=mt))
+        if ex.get("uniform_control", True):
+            conditions["att_expect_uniform"] = (att_gain, None, None,
+                                                expectation(templates, tk["target"], a0, spatial=False, predict=pred, match=mt))
+        if ex.get("wrong_predict"):  # a different superordinate group
+            conditions["att_expect_wrong"] = (att_gain, None, None, expectation(
+                templates, tk["target"], a0, predict=SUPERORDINATE[ex["wrong_predict"]], match=mt))
+        else:
+            conditions["att_expect_wrong"] = (att_gain, None, None, expectation(templates, c6["wrong_template"], a0, match=mt))
+        if ex.get("target_control") and pred:  # the target-level expectation with the same match rule
+            conditions["att_expect_target"] = (att_gain, None, None, expectation(templates, tk["target"], a0, match=mt))
+        if ex.get("specific_attention") and pred:
+            # attention to what is specific to the target within its group (target minus group mean)
+            spec_gain = feature_gain(templates, tk["target"], ex["with_beta"], reference=pred)
+            conditions["att_specific"] = (spec_gain, None, None, None)
+            for a in ex["alphas"]:
+                conditions[f"att_specific_expect_a{a}"] = (spec_gain, None, None,
+                                                           expectation(templates, tk["target"], a, predict=pred, match=mt))
     results = {}
     reference = None  # AIT features without attention: the fixed readout's training data
     if noise_T is not None:
@@ -301,7 +320,7 @@ def main() -> None:
         # responses to clean images of each category, with vs without the target
         # expectation (response = distance from the no-expectation mean pattern),
         # and target-vs-lookalike decoding from those responses
-        fn = expectation(templates, tk["target"], ex["control_alpha"])
+        fn = expectation(templates, tk["target"], ex["control_alpha"], predict=pred, match=mt)
         idx = names.index(tk["attend_stage"])
         below_val = val_maps["V2" if idx == 0 else names[idx - 1]]
         with torch.no_grad():
@@ -350,7 +369,7 @@ def main() -> None:
                 results[best_both]["AIT"]["dprime"] - base - both_wrong >= ch["feature_min_specificity"])
     if ex:
         att_base = results[f"beta_{ex['with_beta']}"]["AIT"]
-        cands = [k for k in results if k.startswith("att_expect_a")]
+        cands = [k for k in results if k.startswith(("att_expect_a", "att_specific_expect_a"))]
         kept = [k for k in cands if results[k]["AIT"]["dprime"] >= att_base["dprime"] - ch["max_dprime_drop"]]
         best_ex = min(kept, key=lambda k: results[k]["AIT"]["fa_lookalike"]) if kept else None
         checks["expectation_lowers_false_alarms"] = bool(best_ex) and (
