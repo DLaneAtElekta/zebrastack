@@ -404,7 +404,7 @@ def main() -> None:
               "best_beta": best_beta, "best_spatial": best_spatial if spatial_keys else None, "checks": checks, "passed": all(checks.values())}
     (out / "report.json").write_text(json.dumps(report, indent=2))
     print(json.dumps({"checks": checks, "best_beta": best_beta}, indent=2))
-    print(f"Phase 6 {'PASSED' if report['passed'] else 'FAILED'}; figures in {out}")
+    print(f"{Path(c6['output_dir']).name} {'PASSED' if report['passed'] else 'FAILED'}; figures in {out}")
 
 
 if __name__ == "__main__":

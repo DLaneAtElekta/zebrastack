@@ -38,6 +38,7 @@ python experiments/phase6_attention.py --config configs/phase6d.yaml  # 6c on th
 python experiments/phase6_attention.py --config configs/phase6e_fixed.yaml    # bottom-up template control, fixed stack
 python experiments/phase6_attention.py --config configs/phase6e_learned.yaml  # bottom-up template control, learned stack
 python experiments/phase6_attention.py --config configs/phase6f.yaml          # gain on the pass-through channels too
+python experiments/phase6_attention.py --config configs/phase7.yaml           # Phase 7: expectation channel (~60 min)
 ```
 
 ## Layout
@@ -72,7 +73,7 @@ gabor-tica/
 | 4 | Temporal coherence | ❌ selectivity kept, but invariance gain +0.017 < 0.05; the fixed Design B front end leaves little for W to change |
 | 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance; 5c: learning V4's Gabor-initialized filters gives no reliable gain; 5d: mixing Gabors across V2 sheet neighbors raises unit invariance (+0.06) but not readout tolerance; 5e: training on test-range transforms adds readout tolerance (+0.023), mostly from data diversity, not the temporal term; 5f: a learned mixing stack keeps V4's gain only for rotation and original accuracy at AIT |
 | 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar; on the learned stack (6d): no effect, templates degrade to 4/10; with ideal bottom-up templates (6e) at most +0.11, so templates are not the main limit; gain on the pass-through (6f) does not raise the ceiling |
-| 7 | Expectation channel | — |
+| 7 | Expectation channel | ❌ predictive subtraction at V4 suppresses expected responses (Kok signature, weak) but does not lower false alarms (0.66 → 0.67–0.71) |
 | 8 | Context topography and routing (stretch) | — |
 
 ## Phase 1 results (`configs/phase1.yaml`)
@@ -1284,6 +1285,74 @@ Findings:
   change that is architectural rather than a matter of gain settings: noise
   and normalization on every channel a stage passes up (so gain acts as in
   the normalization model everywhere), or attention at every stage.
+
+## Phase 7 results: the expectation channel (`configs/phase7.yaml`)
+
+**Build** (`gtv.thalamus.expectation`, `HigherStage(expect=...)`): predictive
+subtraction at V4. After the response noise and before pooling, V4's
+log-normalized energies become prediction errors:
+
+    L'(x, y) = L(x, y) − α · w(x, y) · d
+
+- **d:** the expected category's template deviation from the mean template
+  (bottom-up templates, as in 6e).
+- **w:** the rectified, per-image z-scored match of the noisy local input to
+  d, so no clean information bypasses the bottleneck.
+- **Effect:** input that looks like the expectation is explained away;
+  mismatching features remain as error.
+- **Independent of attention:** attention (energy gain, before
+  normalization) and expectation (subtraction, after) are separate
+  controls.
+- **Test** (`tests/test_phase7.py`): on a ground-truth map, the matched
+  location's deviation is mostly removed and a mismatching pattern is left
+  intact.
+
+Setting: fixed stack, bottom-up templates, noise T = 1, sneaker target,
+sandal / ankle-boot lookalikes. AIT, retrained readout; false alarms at the
+threshold catching 80% of targets:
+
+| Condition | d′ | False alarms (lookalike) | False alarms (absent) |
+|---|---|---|---|
+| no attention | 0.56 | 0.73 | 0.60 |
+| attention β = 2 (reference) | **0.67** | **0.66** | 0.54 |
+| expectation α = 0.5 / 1 / 2 alone | 0.56 / 0.57 / 0.56 | 0.74 / 0.74 / 0.75 | 0.60 / 0.60 / 0.61 |
+| attention + expectation α = 0.5 | 0.66 | 0.67 | 0.55 |
+| attention + expectation α = 1 | 0.65 | 0.70 | 0.58 |
+| attention + expectation α = 2 | 0.65 | 0.71 | 0.59 |
+| attention + uniform expectation (control) | 0.67 | 0.65 | 0.54 |
+| attention + wrong expectation (bag) | 0.67 | 0.66 | 0.54 |
+
+**Expectation suppression** at V4 (clean validation images, α = 1): the
+response (distance from the mean pattern) changes by ×0.976 for sneakers,
+×0.984 for sandals, ×0.991 for ankle boots, ×1.00–1.02 for everything
+else. Sneaker-vs-lookalike decoding from V4 goes from 0.936 to 0.939.
+
+Checks: expectation lowers lookalike false alarms by ≥ 0.05 with d′ within
+0.05 of attention alone ❌ (they rise, 0.66 → 0.67–0.71); expected responses
+suppressed more than others ✅ (weak: −2.4% vs +0.8%); target-vs-lookalike
+decoding not worse ✅ (unchanged).
+
+Findings:
+- **The plan's exit is not met: expectation does not reduce
+  hallucinations here; it slightly increases them,** growing with α, and
+  costs a little d′ (0.67 → 0.65). The controls behave as designed: the
+  constant-offset (uniform) subtraction and the wrong (bag) expectation
+  leave attention's result unchanged. So the effect is real and
+  sneaker-specific, just in the wrong direction.
+- **Why: the expectation is shoe-general.** The sneaker template's
+  deviation from the mean template is dominated by what separates footwear
+  from clothing, so explaining it away suppresses sandals and boots almost as
+  much as sneakers (×0.984 / ×0.991 vs ×0.976). It removes the shared evidence
+  the readout relies on, and what is left does not separate the lookalikes
+  any better (0.936 → 0.939).
+- **The Kok signature is present but weak:** expected (and similar)
+  categories are suppressed, others slightly enhanced, and selectivity is
+  maintained. It is not the sharpening that would reject lookalikes.
+- **What should work better:** a hierarchical prediction.
+  A superordinate expectation ("footwear") explains away the shared shoe
+  component, leaving the sneaker-specific residual (sneaker minus the
+  footwear mean) as the error that attention then amplifies. That component
+  is exactly what distinguishes the target from its lookalikes.
 
 ## Related code elsewhere in this repo
 
