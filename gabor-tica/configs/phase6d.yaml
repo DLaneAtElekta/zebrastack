@@ -24,7 +24,7 @@ task:
   n_distractors: 3          # plus the target / lookalike; absent scenes get one more distractor
   attend_stage: V4
 
-response_noise_T: null          # set by --calibrate-noise: the T whose no-attention AIT d' is closest to 0.5 (rule as 6c)
+response_noise_T: 1.0           # calibration (no attention, AIT d'): T=0.3 0.34, 1 0.61, 3 0.79, 10 0.86; closest to 0.5 (rule as 6c)
 
 betas: [0.0, 0.5, 1.0, 2.0]  # 0 = no attention
 wrong_template: 8            # control: attend to "bag" instead (beta 1)
