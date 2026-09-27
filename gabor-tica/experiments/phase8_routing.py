@@ -39,12 +39,12 @@ import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
 from gtv.config import load_config  # noqa: E402
-from gtv.data import CLASSES, load_fashion_mnist  # noqa: E402
+from gtv.data import CLASSES, SUPERORDINATE, load_fashion_mnist  # noqa: E402
 from gtv.probes.sets import clutter_scene  # noqa: E402
 from gtv.stages import V2Stage, build_higher_stack, build_stage  # noqa: E402
 from gtv.probes.decode import fit_logistic  # noqa: E402
-from gtv.thalamus import (learned_priority, route_window, saliency_map, select_location, select_topk,  # noqa: E402
-                          template_match_map)
+from gtv.thalamus import (expectation, feature_gain, learned_priority, route_window, saliency_map,  # noqa: E402
+                          select_location, select_topk, template_match_map)
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "experiments"))
@@ -91,14 +91,15 @@ def main() -> None:
     v4 = stack["V4"]
     sl = v4.second_order_slice
 
-    def run(images, noise_T=None, noise_seed=0):
-        """-> (V4 second-order features (B, n_second, 8, 8), {stage: TICA outputs})."""
+    def run(images, noise_T=None, noise_seed=0, gain=None, expect=None):
+        """-> (V4 second-order features (B, n_second, 8, 8), {stage: TICA outputs}).
+        ``gain`` / ``expect``: attention and expectation at V4 (Phases 6-7)."""
         ngen = torch.Generator().manual_seed(noise_seed)
         feats, maps = [], {n: [] for n in names}
         with torch.no_grad():
             for xb in images.split(128):
                 s2 = v2(v1(xb))
-                f = v4.features(s2, noise_T=noise_T, generator=ngen)
+                f = v4.features(s2, gain=gain, noise_T=noise_T, generator=ngen, expect=expect)
                 feats.append(f[:, sl])
                 m, b = v4.tica.affine
                 prev = torch.einsum("nd,bdhw->bnhw", m, f) + b.view(1, -1, 1, 1)
@@ -366,6 +367,51 @@ def main() -> None:
                           f"{r['standard']['fa_lookalike']:.2f} | target within any glimpse {r['localization_any']:.2f}"
                           + (f" | first-glimpse error {r['first_glimpse_error_px_median']:.1f} px"
                              if r["first_glimpse_error_px_median"] is not None else ""), flush=True)
+            # Phase 8d: attention / expectation inside the routed windows (learned priority, glimpse-
+            # trained classifier retrained per condition on windows processed the same way)
+            mods = gl.get("modulation")
+            if mods and T is not None:
+                # bottom-up templates at the stack's training scale (the routed windows' format), as in 6e
+                xs_, ys_ = load_fashion_mnist("train", 2000, size, seed=5)
+                fm_ = run(xs_)[0].mean((2, 3))
+                tmpl = torch.stack([fm_[ys_ == c].mean(0) for c in range(len(CLASSES))])
+                cen_tr = select_topk(prio["learned"](tf_), size, kmax, border)
+                win_tr = torch.cat([route_window(tr_imgs.repeat_interleave(kmax, 0), cen_tr.reshape(-1, 2),
+                                                 rt["window"], rt["scale"]),
+                                    route_window(tr_imgs[img_idx], ctr_all, rt["window"], rt["scale"])])
+                near_t, near_l = [], []
+                for i in range(len(made)):
+                    close = (cen_tr[i].view(-1, 1, 2) - ctr_by_scene[i].view(1, -1, 2)).norm(dim=2) <= rt["loc_tolerance"]
+                    near_t.append((close & (cat_by_scene[i] == tk["target"]).view(1, -1)).any(1))
+                    near_l.append((close & torch.isin(cat_by_scene[i], torch.tensor(tk["lookalikes"])).view(1, -1)).any(1))
+                near_t, near_l = torch.cat(near_t), torch.cat(near_l)
+                y_tr = torch.cat([near_t.long(), is_t])
+                keep_tr = torch.cat([~(near_l & ~near_t), keep])
+                win_task = {}
+                for k in KINDS:
+                    cen = select_topk(prio["learned"](first[k]), size, kmax, border)
+                    win_task[k] = route_window(scenes[k][0].repeat_interleave(kmax, 0), cen.reshape(-1, 2),
+                                               rt["window"], rt["scale"])
+                foot = SUPERORDINATE[mods["expect_group"]]
+                results["modulation"] = {}
+                for m in mods["conditions"]:
+                    tgt = c8["task"]["target"] if not m.get("wrong") else mods["wrong_template"]
+                    g_ = feature_gain(tmpl, tgt, m["beta"]) if m.get("beta") else None
+                    e_ = (expectation(tmpl, tgt, m["alpha"], predict=None if m.get("wrong") else foot,
+                                      match="projection") if m.get("alpha") else None)
+                    ftr = readout(run(win_tr, T, 900, g_, e_)[1], "AIT")
+                    inf_s, *_ = fit_scorer(ftr, y_tr)
+                    std_s, *_ = fit_scorer(ftr[keep_tr], y_tr[keep_tr])
+                    per = {}
+                    for i, k in enumerate(KINDS):
+                        fk = readout(run(win_task[k], T, 950 + i, g_, e_)[1], "AIT")
+                        per[k] = {"informed": inf_s(fk).view(-1, kmax), "standard": std_s(fk).view(-1, kmax)}
+                    r = {ro: scores_to_metrics({k: per[k][ro].amax(1) for k in KINDS}) for ro in ("informed", "standard")}
+                    results["modulation"][m["name"]] = r
+                    print(f"{noise_label} in-glimpse {m['name']} (k={kmax}): informed d'(vs lookalike) "
+                          f"{r['informed']['dprime_lookalike']:.2f} FA(lookalike) {r['informed']['fa_lookalike']:.2f} "
+                          f"d'(vs absent) {r['informed']['dprime']:.2f} | standard FA(lookalike) "
+                          f"{r['standard']['fa_lookalike']:.2f} d'(vs absent) {r['standard']['dprime']:.2f}", flush=True)
             results["glimpses"][noise_label] = gres
 
     # ---- checks (declared before running), on the noisy condition
@@ -410,8 +456,10 @@ def main() -> None:
         checks["glimpses_raise_discrimination"] = (
             gn[best]["informed"]["dprime_lookalike"] - base_d >= ch["min_discrimination_gain"])
         checks["glimpses_lower_false_alarms"] = gn[best]["informed"]["fa_lookalike"] <= base_fa - ch["min_fa_drop"]
-        loc_key = "learned_k1" if "learned_k1" in gn else next(k for k in gn if k.startswith("learned[") and k.endswith("_k1"))
-        checks["learned_priority_localizes"] = gn[loc_key]["localization_any"] >= ch["min_localization"]
+        loc_key = "learned_k1" if "learned_k1" in gn else next(
+            (k for k in gn if k.startswith("learned[") and k.endswith("_k1")), None)
+        if loc_key:
+            checks["learned_priority_localizes"] = gn[loc_key]["localization_any"] >= ch["min_localization"]
         if "min_oracle_gap_closed" in ch and "oracle_k1" in gn:
             # Phase 8c: fraction of the gap between pooled and oracle closed by the best routed condition
             gap = gn["oracle_k1"]["informed"]["dprime_lookalike"] - base_d
@@ -419,6 +467,16 @@ def main() -> None:
             checks["closes_gap_to_oracle"] = closed >= ch["min_oracle_gap_closed"]
             results["oracle_gap_closed"] = closed
         results["glimpses_best"] = best
+    md = results.get("modulation")
+    if md and "none" in md:
+        b0 = md["none"]["informed"]
+        cands = [k for k in md if k != "none" and not k.startswith("wrong")]
+        bm = max(cands, key=lambda k: md[k]["informed"]["dprime_lookalike"])
+        checks["in_glimpse_modulation_raises_discrimination"] = (
+            md[bm]["informed"]["dprime_lookalike"] - b0["dprime_lookalike"] >= ch["min_modulation_gain"])
+        checks["in_glimpse_modulation_lowers_false_alarms"] = (
+            min(md[k]["informed"]["fa_lookalike"] for k in cands) <= b0["fa_lookalike"] - ch["min_modulation_fa_drop"])
+        results["modulation_best"] = bm
     report = {"results": results, "checks": checks, "passed": all(checks.values())}
     (out / "report.json").write_text(json.dumps(report, indent=2))
     print(json.dumps({"checks": checks}, indent=2))

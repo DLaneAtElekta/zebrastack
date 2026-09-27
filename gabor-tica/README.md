@@ -43,6 +43,8 @@ python experiments/phase6_attention.py --config configs/phase7b.yaml          # 
 python experiments/phase6_attention.py --config configs/phase7c.yaml          # Phase 7c: 7b with informed readouts (~60 min)
 python experiments/phase8_routing.py                                          # Phase 8: routing (~20 min)
 python experiments/phase8_routing.py --config configs/phase8b.yaml            # Phase 8b: learned priority, glimpses
+python experiments/phase8_routing.py --config configs/phase8c.yaml            # Phase 8c: refinement, gate-trained classifier
+python experiments/phase8_routing.py --config configs/phase8d.yaml            # Phase 8d: attention / expectation in glimpses
 ```
 
 ## Layout
@@ -78,7 +80,7 @@ gabor-tica/
 | 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance; 5c: learning V4's Gabor-initialized filters gives no reliable gain; 5d: mixing Gabors across V2 sheet neighbors raises unit invariance (+0.06) but not readout tolerance; 5e: training on test-range transforms adds readout tolerance (+0.023), mostly from data diversity, not the temporal term; 5f: a learned mixing stack keeps V4's gain only for rotation and original accuracy at AIT |
 | 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar; on the learned stack (6d): no effect, templates degrade to 4/10; with ideal bottom-up templates (6e) at most +0.11, so templates are not the main limit; gain on the pass-through (6f) does not raise the ceiling |
 | 7 | Expectation channel | ❌ predictive subtraction at V4 suppresses expected responses (Kok signature, weak) but does not lower false alarms (0.66 → 0.67–0.71); 7b hierarchical (footwear) expectation neither (0.68–0.70): false alarms are set by the readout (0.69 even noiseless); 7c with readouts that see lookalikes: no condition changes sneaker-vs-lookalike d′ (0.36–0.43; noiseless ceiling 0.53) |
-| 8 | Context topography and routing (stretch) | ✅ routing (8b): learned priority + 4 serial glimpses raise sneaker-vs-lookalike d′ 0.21 → 0.54 and cut false alarms 0.74 → 0.63 under the bottleneck; oracle routing 1.45 |
+| 8 | Context topography and routing (stretch) | ✅ routing (8b): learned priority + 4 serial glimpses raise sneaker-vs-lookalike d′ 0.21 → 0.54 and cut false alarms 0.74 → 0.63 under the bottleneck; 8c: a classifier trained on the gate's own glimpses reaches 0.85, half of the gap to the oracle (1.45) |
 
 ## Phase 1 results (`configs/phase1.yaml`)
 
@@ -1575,6 +1577,43 @@ Findings:
   scores. Next: refine each glimpse's center (a second priority pass inside
   the window) and train the item classifier on windows jittered as they are at
   test.
+
+## Phase 8c: closing the gap to oracle routing (`configs/phase8c.yaml`)
+
+8b's learned-priority glimpses reached the target 92% of the time but gave
+d′ 0.54 against the oracle's 1.45. Two fixes, crossed:
+- **Refine:** sub-cell refinement of each glimpse center, a parabola through
+  the priority peak and its row and column neighbors
+  (`select_topk(refine=True)`). A ground-truth test recovers an off-grid bump
+  within 0.2 cell.
+- **Glimpse-trained classifier:** the item classifier is also trained on the
+  windows the gate actually selects in the training scenes (top-4 glimpses,
+  labelled by whether a sneaker's center is within 10 px), not only on
+  perfectly centered items. It sees off-center sneakers and the distractor
+  windows that raise the max over glimpses.
+
+| Learned priority, 4 glimpses | Noiseless: d′ vs lookalike / false alarms | Noise T = 1: d′ vs lookalike / false alarms / d′ vs absent | First-glimpse error (median, hits) |
+|---|---|---|---|
+| pooled (no routing) | 0.30 / 0.73 | 0.21 / 0.74 / 0.48 | — |
+| base (8b) | 0.61 / 0.58 | 0.54 / 0.63 / 0.74 | 6.1 px |
+| + refine | 0.73 / 0.58 | 0.58 / 0.65 / 0.71 | 5.6 px |
+| + glimpse-trained classifier | 0.94 / 0.55 | **0.85 / 0.57 / 1.20** | 6.1 px |
+| both | **1.03 / 0.49** | 0.81 / 0.57 / 1.10 | 5.6 px |
+| oracle | 1.61 / 0.25 | 1.45 / 0.29 / 2.34 | 0 |
+
+Checks (noisy): the best routed condition closes ≥ 50% of the pooled-to-oracle
+d′ gap ✅ (52%: 0.21 → 0.85 of 1.45); raises d′ by ≥ 0.2 ✅; lowers false
+alarms by ≥ 0.1 ✅ (0.74 → 0.57).
+
+Findings:
+- **Most of the gap was the classifier, not the localization.**
+  Training it on the gate's own glimpses raises d′ from 0.54 to 0.85 under
+  noise (0.61 → 0.94 noiseless). Refinement barely moves the centers (6.1 →
+  5.6 px) and adds little, since the priority peak itself is coarse.
+- **Routing now more than quadruples sneaker-vs-lookalike d′ over the pooled
+  scene** (0.21 → 0.85) and lowers false alarms from 0.74 to 0.57. The
+  remaining gap to the oracle (0.85 vs 1.45) is mostly localization error
+  (about 6 px) and the four-way max.
 
 ## Related code elsewhere in this repo
 

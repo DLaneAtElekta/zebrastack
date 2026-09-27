@@ -1,0 +1,56 @@
+# Phase 8d: attention and expectation inside the routed windows. Routing (learned priority,
+# 4 glimpses, glimpse-trained item classifier, 8c) under the V4 bottleneck (T = 1); in each
+# routed window V4 gets the Phase 6e feature gain and / or the Phase 7b footwear expectation,
+# with bottom-up templates at the stack's training scale. The item classifier is retrained
+# per condition on training windows processed the same way.
+# Run: python experiments/phase8_routing.py --config configs/phase8d.yaml
+base_config: configs/phase5b.yaml
+stack_checkpoint: runs/phase5b/phase5_stages.pt
+
+templates_per_class: 200     # single-item training scenes per category (templates at scene scale)
+
+task:                        # as Phase 6c-7c
+  target: 7                  # sneaker
+  lookalikes: [5, 9]         # sandal, ankle boot
+  n_per_kind: 600
+  n_distractors: 3
+
+diagnostic_distractors: []   # done in 8a-8c
+
+response_noise_T: 1.0        # the Phase 6c bottleneck at V4 (both passes)
+
+routing:
+  window: 28                 # px: one item
+  scale: 2.0                 # items were 2x upsampled when the stack was fitted
+  loc_tolerance: 10.0        # px from the target's center counts as localized
+
+glimpses:                    # Phase 8b
+  border: 1                  # ignore V4's edge cells (padding artifacts; V4 was fitted without them)
+  k: [4]
+  priorities: [learned, oracle]
+  variants:
+    - {name: glimpse_trained, refine: false, classifier: glimpse}   # best in 8c (noisy): the reference
+  modulation:                # Phase 8d, noisy condition only, inside the routed windows
+    expect_group: footwear   # expectation predicts the footwear pattern (7b), projection match
+    wrong_template: 8        # bag
+    conditions:
+      - {name: none}
+      - {name: attention_b1, beta: 1.0}
+      - {name: attention_b2, beta: 2.0}
+      - {name: expectation_a1, alpha: 1.0}
+      - {name: attention_b2_expectation_a1, beta: 2.0, alpha: 1.0}
+      - {name: wrong_attention_b2, beta: 2.0, wrong: true}
+  n_train_scenes: 1500       # training-item scenes (half with a sneaker) for the cell detector and item classifier
+  train_seed: 21
+
+checks:                      # declared before running; on the noisy condition, vs pooled (Phase 7 reference)
+  min_discrimination_gain: 0.2   # informed sneaker-vs-lookalike d'
+  min_fa_drop: 0.1               # informed lookalike false alarms
+  min_localization: 0.6          # template routing lands on the target in present scenes
+                                 # plus: template routing beats saliency routing on that d'
+                                 # 8b: the best glimpse condition on the same bars; learned k=1 localization
+  min_oracle_gap_closed: 0.5     # 8c: the best routed condition closes half the pooled-to-oracle d' gap
+  min_modulation_gain: 0.2       # 8d: best in-glimpse attention / expectation vs none, informed d' vs lookalike
+  min_modulation_fa_drop: 0.05   # 8d: and lookalike false alarms
+
+output_dir: runs/phase8d
