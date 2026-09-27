@@ -47,3 +47,17 @@ def test_topk_glimpses_suppress_neighbors_and_border():
     w = torch.tensor([1.0, 0.0, 0.0, 0.0])
     lp = learned_priority(f, w, 0.5, torch.zeros(4), torch.ones(4))
     assert torch.allclose(lp, f[:, 0] + 0.5)
+
+
+def test_subcell_refinement_recovers_an_offset_peak():
+    """Ground truth: a smooth bump centered between cells (at cell 3.3, 4.8)
+    is found at the right sub-cell position; without refinement it snaps."""
+    from gtv.thalamus import select_topk
+
+    yy, xx = torch.meshgrid(torch.arange(8).float(), torch.arange(8).float(), indexing="ij")
+    pr = (-((yy - 3.3) ** 2 + (xx - 4.8) ** 2) / 2.0).unsqueeze(0)
+    snapped = select_topk(pr, 64, 1, border=1)[0, 0]
+    refined = select_topk(pr, 64, 1, border=1, refine=True)[0, 0]
+    truth = torch.tensor([(3.3 + 0.5) * 8, (4.8 + 0.5) * 8])
+    assert (refined - truth).abs().max() < 0.2
+    assert (snapped - truth).abs().max() > 1.5

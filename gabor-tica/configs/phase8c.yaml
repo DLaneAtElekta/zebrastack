@@ -1,0 +1,46 @@
+# Phase 8c: closing the gap to oracle routing. Learned priority + serial glimpses (8b),
+# with sub-cell refinement of each glimpse center and an item classifier trained on
+# the windows the gate actually selects in training scenes (off-center sneakers and the
+# distractor glimpses that inflate the max over glimpses).
+# Run: python experiments/phase8_routing.py --config configs/phase8c.yaml
+base_config: configs/phase5b.yaml
+stack_checkpoint: runs/phase5b/phase5_stages.pt
+
+templates_per_class: 200     # single-item training scenes per category (templates at scene scale)
+
+task:                        # as Phase 6c-7c
+  target: 7                  # sneaker
+  lookalikes: [5, 9]         # sandal, ankle boot
+  n_per_kind: 600
+  n_distractors: 3
+
+diagnostic_distractors: [0, 3]   # single objects vs the task's clutter (pooled, noiseless)
+
+response_noise_T: 1.0        # the Phase 6c bottleneck at V4 (both passes)
+
+routing:
+  window: 28                 # px: one item
+  scale: 2.0                 # items were 2x upsampled when the stack was fitted
+  loc_tolerance: 10.0        # px from the target's center counts as localized
+
+glimpses:                    # Phase 8b
+  border: 1                  # ignore V4's edge cells (padding artifacts; V4 was fitted without them)
+  k: [1, 4]                  # serial glimpses (top-k with suppression); scene score = max over glimpses
+  priorities: [learned, oracle]   # the 8b priority conditions to rerun
+  variants:                  # Phase 8c, learned priority
+    - {name: base, refine: false, classifier: centered}          # = 8b
+    - {name: refine, refine: true, classifier: centered}         # sub-cell refinement of each center
+    - {name: glimpse_trained, refine: false, classifier: glimpse}  # item classifier also trained on the gate's own glimpses
+    - {name: both, refine: true, classifier: glimpse}
+  n_train_scenes: 1500       # training-item scenes (half with a sneaker) for the cell detector and item classifier
+  train_seed: 21
+
+checks:                      # declared before running; on the noisy condition, vs pooled (Phase 7 reference)
+  min_discrimination_gain: 0.2   # informed sneaker-vs-lookalike d'
+  min_fa_drop: 0.1               # informed lookalike false alarms
+  min_localization: 0.6          # template routing lands on the target in present scenes
+                                 # plus: template routing beats saliency routing on that d'
+                                 # 8b: the best glimpse condition on the same bars; learned k=1 localization
+  min_oracle_gap_closed: 0.5     # 8c: the best routed condition closes half the pooled-to-oracle d' gap
+
+output_dir: runs/phase8c

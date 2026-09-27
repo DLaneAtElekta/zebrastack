@@ -50,19 +50,42 @@ def select_location(priority: torch.Tensor, image_size: int, border: int = 0) ->
     return select_topk(priority, image_size, 1, border)[:, 0]
 
 
+def _subcell(line: torch.Tensor, i: torch.Tensor) -> torch.Tensor:
+    """Parabolic peak offset (in cells, within +-0.5) at index i of each row of
+    ``line`` (B, L); 0 where a neighbor is missing or not finite."""
+    b, n = line.shape
+    r = torch.arange(b)
+    left = line[r, (i - 1).clamp(min=0)]
+    mid = line[r, i]
+    right = line[r, (i + 1).clamp(max=n - 1)]
+    ok = (i > 0) & (i < n - 1) & torch.isfinite(left) & torch.isfinite(right)
+    den = left - 2 * mid + right
+    off = torch.where(ok & (den < 0), 0.5 * (left - right) / den.where(den != 0, torch.ones_like(den)),
+                      torch.zeros_like(mid))
+    return off.clamp(-0.5, 0.5)
+
+
 def select_topk(priority: torch.Tensor, image_size: int, k: int, border: int = 0,
-                min_sep: int = 2) -> torch.Tensor:
+                min_sep: int = 2, refine: bool = False) -> torch.Tensor:
     """(B, H, W) -> (B, k, 2) pixel centers of the k highest cells, greedily
     suppressing cells within ``min_sep`` (Chebyshev, in cells) of a chosen one
-    (serial glimpses that do not revisit the same object)."""
+    (serial glimpses that do not revisit the same object). ``refine``: move
+    each center to the sub-cell peak of a parabola through the chosen cell and
+    its row and column neighbors (the map's cells are coarse: 8 px at V4)."""
     b, h, w = priority.shape
-    p = _masked(priority, border).clone()
+    base = _masked(priority, border)
+    p = base.clone()
     yy, xx = torch.meshgrid(torch.arange(h), torch.arange(w), indexing="ij")
     out = []
+    r = torch.arange(b)
     for _ in range(k):
         idx = p.flatten(1).argmax(1)
         cy, cx = idx // w, idx % w
-        out.append(torch.stack([(cy.float() + 0.5) * image_size / h, (cx.float() + 0.5) * image_size / w], 1))
+        fy, fx = cy.float(), cx.float()
+        if refine:
+            fy = fy + _subcell(base[r, :, cx], cy)
+            fx = fx + _subcell(base[r, cy, :], cx)
+        out.append(torch.stack([(fy + 0.5) * image_size / h, (fx + 0.5) * image_size / w], 1))
         near = ((yy.view(1, h, w) - cy.view(-1, 1, 1)).abs() < min_sep) & \
                ((xx.view(1, h, w) - cx.view(-1, 1, 1)).abs() < min_sep)
         p = p.masked_fill(near, -float("inf"))

@@ -285,7 +285,8 @@ def main() -> None:
                 "saliency": saliency_map,
             }
             gres = {}
-            for pname in list(prio) + ["random", "oracle"]:
+            allp = list(prio) + ["random", "oracle"]
+            for pname in [q for q in allp if q in (gl.get("priorities") or allp)]:
                 per_kind, loc_hits = {}, None
                 for i, k in enumerate(KINDS):
                     n = len(first[k])
@@ -313,6 +314,58 @@ def main() -> None:
                           f"d'(vs absent) {r['informed']['dprime']:.2f} | standard FA(lookalike) "
                           f"{r['standard']['fa_lookalike']:.2f} | target within any glimpse {r['localization_any']:.2f}",
                           flush=True)
+            # Phase 8c: learned-priority variants (sub-cell refinement, item classifier trained on
+            # the glimpses the gate actually selects in the training scenes)
+            ctr_by_scene = [torch.tensor(m[1]) for m in made]
+            cat_by_scene = [torch.tensor(m[2]) for m in made]
+            glimpse_scorers, routed_task = {}, {}
+            for v in gl.get("variants", []):
+                ref = v["refine"]
+                if v["classifier"] == "glimpse" and ref not in glimpse_scorers:
+                    cen = select_topk(prio["learned"](tf_), size, kmax, border, refine=ref)  # (N, kmax, 2)
+                    win = route_window(tr_imgs.repeat_interleave(kmax, 0), cen.reshape(-1, 2), rt["window"], rt["scale"])
+                    gf = readout(run(win, T, 800)[1], "AIT")
+                    near_t, near_l = [], []
+                    for i in range(len(made)):
+                        dist = (cen[i].view(-1, 1, 2) - ctr_by_scene[i].view(1, -1, 2)).norm(dim=2)  # (kmax, items)
+                        close = dist <= rt["loc_tolerance"]
+                        near_t.append((close & (cat_by_scene[i] == tk["target"]).view(1, -1)).any(1))
+                        near_l.append((close & torch.isin(cat_by_scene[i], torch.tensor(tk["lookalikes"])).view(1, -1)).any(1))
+                    near_t, near_l = torch.cat(near_t), torch.cat(near_l)
+                    xg, yg = torch.cat([gf, wf]), torch.cat([near_t.long(), is_t])
+                    keep_g = torch.cat([~(near_l & ~near_t), keep])
+                    inf_s, *_ = fit_scorer(xg, yg)
+                    std_s, *_ = fit_scorer(xg[keep_g], yg[keep_g])
+                    glimpse_scorers[ref] = (inf_s, std_s)
+                    print(f"{noise_label} glimpse-trained classifier (refine={ref}): {int(near_t.sum())} sneaker "
+                          f"glimpses of {len(near_t)}", flush=True)
+                if ref not in routed_task:
+                    routed_task[ref] = {}
+                    for i, k in enumerate(KINDS):
+                        n = len(first[k])
+                        cen = select_topk(prio["learned"](first[k]), size, kmax, border, refine=ref)
+                        win = route_window(scenes[k][0].repeat_interleave(kmax, 0), cen.reshape(-1, 2),
+                                           rt["window"], rt["scale"])
+                        routed_task[ref][k] = (readout(run(win, T, 700 + i)[1], "AIT"), cen)
+                inf_s, std_s = glimpse_scorers[ref] if v["classifier"] == "glimpse" else (informed_score, standard_score)
+                n = len(first["present"])
+                cen_p = routed_task[ref]["present"][1]
+                hits = (cen_p - scenes["present"][1].view(n, 1, 2)).norm(dim=2) <= rt["loc_tolerance"]
+                per = {k: {"informed": inf_s(routed_task[ref][k][0]).view(-1, kmax),
+                           "standard": std_s(routed_task[ref][k][0]).view(-1, kmax)} for k in KINDS}
+                for kg in gl["k"]:
+                    r = {ro: scores_to_metrics({k: per[k][ro][:, :kg].amax(1) for k in KINDS})
+                         for ro in ("informed", "standard")}
+                    r["localization_any"] = float(hits[:, :kg].any(1).float().mean())
+                    err = (cen_p[:, 0] - scenes["present"][1]).norm(dim=1)
+                    r["first_glimpse_error_px_median"] = float(err[hits[:, 0]].median()) if hits[:, 0].any() else None
+                    gres[f"learned[{v['name']}]_k{kg}"] = r
+                    print(f"{noise_label} glimpses learned[{v['name']}] k={kg}: informed d'(vs lookalike) "
+                          f"{r['informed']['dprime_lookalike']:.2f} FA(lookalike) {r['informed']['fa_lookalike']:.2f} "
+                          f"d'(vs absent) {r['informed']['dprime']:.2f} | standard FA(lookalike) "
+                          f"{r['standard']['fa_lookalike']:.2f} | target within any glimpse {r['localization_any']:.2f}"
+                          + (f" | first-glimpse error {r['first_glimpse_error_px_median']:.1f} px"
+                             if r["first_glimpse_error_px_median"] is not None else ""), flush=True)
             results["glimpses"][noise_label] = gres
 
     # ---- checks (declared before running), on the noisy condition
@@ -357,7 +410,14 @@ def main() -> None:
         checks["glimpses_raise_discrimination"] = (
             gn[best]["informed"]["dprime_lookalike"] - base_d >= ch["min_discrimination_gain"])
         checks["glimpses_lower_false_alarms"] = gn[best]["informed"]["fa_lookalike"] <= base_fa - ch["min_fa_drop"]
-        checks["learned_priority_localizes"] = gn["learned_k1"]["localization_any"] >= ch["min_localization"]
+        loc_key = "learned_k1" if "learned_k1" in gn else next(k for k in gn if k.startswith("learned[") and k.endswith("_k1"))
+        checks["learned_priority_localizes"] = gn[loc_key]["localization_any"] >= ch["min_localization"]
+        if "min_oracle_gap_closed" in ch and "oracle_k1" in gn:
+            # Phase 8c: fraction of the gap between pooled and oracle closed by the best routed condition
+            gap = gn["oracle_k1"]["informed"]["dprime_lookalike"] - base_d
+            closed = (gn[best]["informed"]["dprime_lookalike"] - base_d) / gap if gap > 0 else 0.0
+            checks["closes_gap_to_oracle"] = closed >= ch["min_oracle_gap_closed"]
+            results["oracle_gap_closed"] = closed
         results["glimpses_best"] = best
     report = {"results": results, "checks": checks, "passed": all(checks.values())}
     (out / "report.json").write_text(json.dumps(report, indent=2))
