@@ -80,7 +80,7 @@ gabor-tica/
 | 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance; 5c: learning V4's Gabor-initialized filters gives no reliable gain; 5d: mixing Gabors across V2 sheet neighbors raises unit invariance (+0.06) but not readout tolerance; 5e: training on test-range transforms adds readout tolerance (+0.023), mostly from data diversity, not the temporal term; 5f: a learned mixing stack keeps V4's gain only for rotation and original accuracy at AIT |
 | 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar; on the learned stack (6d): no effect, templates degrade to 4/10; with ideal bottom-up templates (6e) at most +0.11, so templates are not the main limit; gain on the pass-through (6f) does not raise the ceiling |
 | 7 | Expectation channel | ❌ predictive subtraction at V4 suppresses expected responses (Kok signature, weak) but does not lower false alarms (0.66 → 0.67–0.71); 7b hierarchical (footwear) expectation neither (0.68–0.70): false alarms are set by the readout (0.69 even noiseless); 7c with readouts that see lookalikes: no condition changes sneaker-vs-lookalike d′ (0.36–0.43; noiseless ceiling 0.53) |
-| 8 | Context topography and routing (stretch) | ✅ routing (8b): learned priority + 4 serial glimpses raise sneaker-vs-lookalike d′ 0.21 → 0.54 and cut false alarms 0.74 → 0.63 under the bottleneck; 8c: a classifier trained on the gate's own glimpses reaches 0.85, half of the gap to the oracle (1.45) |
+| 8 | Context topography and routing (stretch) | ✅ routing (8b): learned priority + 4 serial glimpses raise sneaker-vs-lookalike d′ 0.21 → 0.54 and cut false alarms 0.74 → 0.63 under the bottleneck; 8c: a classifier trained on the gate's own glimpses reaches 0.85, half of the gap to the oracle (1.45); 8d: attention / expectation inside the glimpses add nothing |
 
 ## Phase 1 results (`configs/phase1.yaml`)
 
@@ -1614,6 +1614,53 @@ Findings:
   scene** (0.21 → 0.85) and lowers false alarms from 0.74 to 0.57. The
   remaining gap to the oracle (0.85 vs 1.45) is mostly localization error
   (about 6 px) and the four-way max.
+
+## Phase 8d: attention and expectation inside the routed windows (`configs/phase8d.yaml`)
+
+The Phase 6–7 mechanisms, applied where Phase 8 showed the information is: in
+each routed window.
+- **Routing:** learned priority, 4 glimpses, glimpse-trained item classifier
+  (the best 8c setting), under the V4 bottleneck (T = 1).
+- **Attention:** the Phase 6e feature gain, with bottom-up templates at the
+  stack's training scale (the routed windows' format).
+- **Expectation:** the Phase 7b footwear expectation (projection match).
+- **Readout:** the item classifier is retrained per condition on training
+  windows processed the same way.
+
+This run skips the diagnostic, so its scene sample differs from 8c's. The
+reference numbers are from the same run: pooled 0.35 / 0.69 (d′ vs lookalike
+/ false alarms), oracle 1.48 / 0.26, glimpse-trained routing 0.77 / 0.63.
+
+| In-glimpse modulation (noise T = 1, 4 glimpses) | d′ vs lookalike | False alarms (lookalike) | d′ vs absent |
+|---|---|---|---|
+| none | 0.80 | 0.57 | 1.09 |
+| attention β = 1 | 0.78 | 0.58 | 1.11 |
+| attention β = 2 | 0.80 | 0.57 | 1.11 |
+| footwear expectation α = 1 | 0.79 | 0.60 | 1.09 |
+| attention β = 2 + expectation α = 1 | 0.78 | 0.58 | 1.12 |
+| wrong attention (bag) β = 2 | 0.81 | 0.58 | 1.12 |
+
+Checks: in-glimpse modulation raises d′ by ≥ 0.2 ❌; lowers false alarms by
+≥ 0.05 ❌. On this scene sample the routing checks also come out lower than in
+8c: pooled to glimpse-trained routing +0.42 d′ (0.35 → 0.77) but false alarms
+only −0.06, and 37% of the gap to the oracle closed (52% in 8c).
+
+Findings:
+- **Attention and expectation do nothing even inside object-centered
+  windows.** Every condition, the wrong template included, is within ±0.02 of
+  none. So the clutter was not what blocked them. Their lever is too weak:
+  they act only on V4's second-order energies, while the pass-through channels
+  carry V2's information through the same noise untouched (6f), and a
+  retrained readout re-weights whatever gain or subtraction does to the
+  energies.
+- **Routing is robust across scene samples but its size varies:** +0.42 to
+  +0.64 d′ over the pooled scene and 37–52% of the gap to the oracle across
+  the 8c and 8d samples. Single-sample differences of about 0.1 d′ and 0.05
+  in false alarms should be read as noise.
+- **Summary of Phases 6–8:** in this hierarchy, what reduces hallucinated
+  targets in clutter is *where the stack looks* (routing, with a learned
+  priority map and a classifier trained on the gate's own glimpses), not
+  *how V4 is modulated* (gain, subtraction) at the scene or the window level.
 
 ## Related code elsewhere in this repo
 
