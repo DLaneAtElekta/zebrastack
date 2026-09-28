@@ -38,6 +38,8 @@ python experiments/phase6_attention.py --config configs/phase6d.yaml  # 6c on th
 python experiments/phase6_attention.py --config configs/phase6e_fixed.yaml    # bottom-up template control, fixed stack
 python experiments/phase6_attention.py --config configs/phase6e_learned.yaml  # bottom-up template control, learned stack
 python experiments/phase6_attention.py --config configs/phase6f.yaml          # gain on the pass-through channels too
+python experiments/phase5_hierarchy.py --config configs/phase5g.yaml          # stack with a rate-coded V4 pass-through
+python experiments/phase6_attention.py --config configs/phase6g.yaml          # Phase 6g: attention on it, Poisson noise
 python experiments/phase6_attention.py --config configs/phase7.yaml           # Phase 7: expectation channel (~60 min)
 python experiments/phase6_attention.py --config configs/phase7b.yaml          # Phase 7b: hierarchical expectation (~60 min)
 python experiments/phase6_attention.py --config configs/phase7c.yaml          # Phase 7c: 7b with informed readouts (~60 min)
@@ -78,7 +80,7 @@ gabor-tica/
 | FE-3 | Context-conditioned precision (V2-level analog) | ❌ no d′ gain; no headroom exists at V1–V2 (reconstruction always matches the input ceiling) |
 | 4 | Temporal coherence | ❌ selectivity kept, but invariance gain +0.017 < 0.05; the fixed Design B front end leaves little for W to change |
 | 5 | V4 → PIT → AIT | ✅ recognition stack; 5b keeps the pass-through (AIT 0.84, stronger clusters) but upper stages add no invariance; 5c: learning V4's Gabor-initialized filters gives no reliable gain; 5d: mixing Gabors across V2 sheet neighbors raises unit invariance (+0.06) but not readout tolerance; 5e: training on test-range transforms adds readout tolerance (+0.023), mostly from data diversity, not the temporal term; 5f: a learned mixing stack keeps V4's gain only for rotation and original accuracy at AIT |
-| 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar; on the learned stack (6d): no effect, templates degrade to 4/10; with ideal bottom-up templates (6e) at most +0.11, so templates are not the main limit; gain on the pass-through (6f) does not raise the ceiling |
+| 6 | Thalamic gain (attention field) | ❌ noiseless: no effect; with a noise bottleneck (6c): small target-specific gain (+0.08 AIT, +0.12 V4), below the 0.2 bar; on the learned stack (6d): no effect, templates degrade to 4/10; with ideal bottom-up templates (6e) at most +0.11, so templates are not the main limit; gain on the pass-through (6f) does not raise the ceiling; 6g (rate-coded pass-through, Poisson noise): energy gain +0.13 d′ target-specific, discrimination gains not specific |
 | 7 | Expectation channel | ❌ predictive subtraction at V4 suppresses expected responses (Kok signature, weak) but does not lower false alarms (0.66 → 0.67–0.71); 7b hierarchical (footwear) expectation neither (0.68–0.70): false alarms are set by the readout (0.69 even noiseless); 7c with readouts that see lookalikes: no condition changes sneaker-vs-lookalike d′ (0.36–0.43; noiseless ceiling 0.53) |
 | 8 | Context topography and routing (stretch) | ✅ routing (8b): learned priority + 4 serial glimpses raise sneaker-vs-lookalike d′ 0.21 → 0.54 and cut false alarms 0.74 → 0.63 under the bottleneck; 8c: a classifier trained on the gate's own glimpses reaches 0.85, half of the gap to the oracle (1.45); 8d: attention / expectation inside the glimpses add nothing |
 
@@ -1661,6 +1663,70 @@ Findings:
   targets in clutter is *where the stack looks* (routing, with a learned
   priority map and a classifier trained on the gate's own glimpses), not
   *how V4 is modulated* (gain, subtraction) at the scene or the window level.
+
+## Phase 6g: a rate-coded pass-through with true Poisson noise (`configs/phase5g.yaml`, `configs/phase6g.yaml`)
+
+Phases 6f, 7b and 8d all traced the weak attention and expectation effects to
+the pass-through, which carried V2's information past the gain. Here V4's
+pass-through gets the energies' pathway (`HigherStage(pass_mode="rate")`):
+- **Rates:** each signed channel becomes an ON and an OFF rate (relu(x),
+  relu(−x)) with their own divisive normalization.
+- **Noise and gain:** response noise acts on the normalized rates, and
+  attention gain scales the rates before normalization, so the normalization
+  pool does the budgeting (the normalization model).
+- **Output:** ON − OFF, pooled, is passed up.
+- **Test:** the sign is carried; a gain on one channel suppresses the others
+  through the pool; the noise grows with the rate.
+- **Refit:** V4, PIT and AIT are refit (stack 5g). Information is preserved:
+  matched readout V4 0.864, PIT 0.863, AIT 0.855, vs 0.866 / 0.867 / 0.859 for
+  5b.
+
+**A noise-model artifact, found and fixed.** With the Gaussian
+approximation of Poisson noise used since 6c, R + √(R/T)·N(0,1), no-attention
+AIT d′ *rose* as the noise grew (0.72 at T = 1, 0.77 at 0.1, 0.84 at 0.01).
+The approximation's variance tracks R, so at small T the noise itself carries
+information about R. The readout's pooled-energy features can estimate that
+variance, and a Gaussian with variance ∝ R keeps at least 1/(2R²) Fisher
+information as T → 0. The fix is true Poisson counts, Poisson(R·T)/T
+(`noise_kind="poisson"`); a test checks that its information vanishes as the
+window shrinks while the approximation's does not. Phases 6c–8 used the
+approximation at T = 1, where the leak is small next to the Gaussian
+pass-through noise, and their results are kept as run. Calibration (same
+rule): T = 1: 0.68, 0.3: 0.69, 0.1: 0.64, 0.03: 0.53, so T = 0.03 (about 0.03
+expected spikes per unit per trial).
+
+| Condition (AIT, T = 0.03) | d′ (present vs absent) | False alarms (lookalike) | Informed: d′ vs lookalike | Informed: false alarms |
+|---|---|---|---|---|
+| noiseless | 0.82 | 0.71 | 0.44 | 0.65 |
+| no attention | 0.53 | 0.77 | 0.17 | 0.75 |
+| energy gain β = 0.5 / 1 / 2 | 0.52 / 0.54 / **0.66** | 0.69 / 0.75 / 0.69 | 0.26 / 0.32 / 0.29 | 0.73 / 0.69 / 0.70 |
+| wrong template (bag, energy, β = 1) | 0.51 | 0.74 | 0.17 | 0.75 |
+| pass-through gain β = 1 / 2 | 0.51 / 0.55 | 0.75 / 0.69 | 0.19 / 0.32 | 0.74 / 0.70 |
+| both β = 1 / 2 | 0.61 / 0.57 | 0.74 / 0.72 | 0.17 / 0.29 | 0.77 / 0.69 |
+| both, wrong template (bag), β = 2 | 0.50 | 0.71 | **0.31** | 0.68 |
+
+Tuning shift toward the target (β = 1): 70% of V4 units.
+
+Checks: attention raises d′ by ≥ 0.2 ❌ (+0.13, energy β = 2); combined gain ≥
+0.2 ❌; attention target-specific ✅ (+0.13 vs −0.02 for the wrong template).
+"Combined target-specific" reports ✅, but it compares β = 1 with the wrong
+template at β = 2; at matched β = 2 the wrong template does as well on
+discrimination.
+
+Findings:
+- **A normalization-model pass-through does not unlock attention.** Energy
+  gain gives the same target-specific present-vs-absent gain as before
+  (+0.13, cf. +0.11 in 6e), and gain on the rate-coded pass-through adds
+  nothing specific.
+- **The sneaker-vs-lookalike gains are not target-specific.** Informed
+  discrimination rises from 0.17 to about 0.3 with any strong gain, including
+  bag attention on both paths (0.31). Under a Poisson bottleneck, gain raises
+  rates, so more spikes survive; that helps whatever the template, and it is
+  not the selective effect attention should have.
+- **The noise-model finding matters beyond this phase.** A Gaussian
+  approximation of Poisson noise can leak information through its variance. A
+  noise bottleneck used to test a mechanism should use true counts, or at
+  least check that information falls monotonically with the noise level.
 
 ## Related code elsewhere in this repo
 
