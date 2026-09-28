@@ -33,17 +33,34 @@ class HigherStage(Stage):
         log_eps: float = 1e-4,
         eps: float = 1e-3,
         first_budget: int | str | None = None,
+        pass_mode: str = "linear",
+        pass_norm_sigma: float = 0.1,
+        pass_norm_spatial_std: float = 1.0,
     ):
         """``first_budget``: whitening dimensions for the first-order (+ skip)
         channels, i.e. the pass-through of the stage below. None = half the
         sheet (the Phase 5 default, which discards part of what the stage
         received); "all" = every first-order channel, the rest of the sheet
-        going to second-order channels."""
+        going to second-order channels.
+
+        ``pass_mode``: "linear" (Phases 5-8) passes the stage below's outputs up
+        as they are (pooled). "rate" (Phase 6g) codes each signed channel as an
+        ON and an OFF rate (relu(x), relu(-x)) that go through their own divisive
+        normalization, so the pass-through gets the same normalization-model
+        pathway as the energies: attention gain scales the rates before
+        normalization, and the response noise is Poisson-like on the normalized
+        rates. The channel passed up is ON - OFF, pooled."""
         super().__init__(name)
         self.in_channels, self.skip_channels = in_channels, skip_channels
         self.bank = GaborBank(n_orientations, 1, freq)
         self.norm = DivisiveNormalization(norm_sigma, norm_spatial_std)
         self.log = Log(log_eps)
+        if pass_mode not in ("linear", "rate"):
+            raise ValueError(f"unknown pass_mode {pass_mode!r}")
+        if pass_mode == "rate" and skip_channels:
+            raise ValueError("rate-coded pass-through is implemented without skips")
+        self.pass_mode = pass_mode
+        self.pass_norm = DivisiveNormalization(pass_norm_sigma, pass_norm_spatial_std)
         self.n_second = in_channels * n_orientations
         self.n_first = in_channels + skip_channels
         dim = sheet * sheet
@@ -101,6 +118,17 @@ class HigherStage(Stage):
             lr_ = expect(lr_)
         second = F.avg_pool2d(lr_, 2)
         h, w = second.shape[-2:]
+        if self.pass_mode == "rate":
+            c = x.shape[1]
+            drive = torch.cat([x.clamp(min=0), (-x).clamp(min=0)], 1)
+            if pass_gain is not None:
+                drive = drive * pass_gain.repeat(2).view(1, -1, 1, 1)
+            r1 = self.pass_norm(drive)
+            if noise_T is not None:
+                n1 = torch.randn(r1.shape, generator=generator)
+                r1 = (r1 + torch.sqrt(r1.clamp(min=0) / noise_T) * n1).clamp(min=0)
+            first = F.adaptive_avg_pool2d(r1[:, :c] - r1[:, c:], (h, w))
+            return torch.cat([first, second], 1)
         first = [F.adaptive_avg_pool2d(x, (h, w))]
         for s in skips or []:
             first.append(F.adaptive_avg_pool2d(s, (h, w)))
@@ -161,6 +189,9 @@ def build_stack(stage_cfgs: dict, in_channels: dict[str, int]) -> dict[str, "Hig
     for name, sc in stage_cfgs.items():
         skip = sc.get("skip")
         kw = {"skip_channels": in_channels[skip] if skip else 0, "first_budget": sc.get("first_budget")}
+        for key in ("pass_mode", "pass_norm_sigma", "pass_norm_spatial_std"):
+            if key in sc:
+                kw[key] = sc[key]
         if sc.get("bank") == "mix":
             stages[name] = LearnedHigherStage(name, prev, sc["sheet"], sc["radius"], bank="mix",
                                               mix_radius=sc.get("mix_radius", 1), offset=sc.get("offset", 2), **kw)

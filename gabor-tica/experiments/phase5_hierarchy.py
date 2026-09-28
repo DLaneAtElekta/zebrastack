@@ -115,6 +115,9 @@ def main() -> None:
     for name, sc in c5["stages"].items():
         skip_src = sc["skip"]
         kw = {"skip_channels": below[skip_src].shape[1] if skip_src else 0, "first_budget": sc.get("first_budget")}
+        for key in ("pass_mode", "pass_norm_sigma", "pass_norm_spatial_std"):
+            if key in sc:
+                kw[key] = sc[key]
         if sc.get("bank") == "mix":
             if skip_src:
                 raise ValueError("mixing stages are trained without skips")

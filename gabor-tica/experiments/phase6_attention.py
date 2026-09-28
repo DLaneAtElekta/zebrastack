@@ -248,13 +248,15 @@ def main() -> None:
             e1 = torch.cat([att.features(b)[:, :att.n_first].pow(2).mean((2, 3)) for b in below.split(256)])
         pass_templates = torch.stack([e1[y_fit == k].mean(0) for k in range(len(CLASSES))])
         wb = c6.get("wrong_beta", 1.0)
+        # with a rate-coded pass-through its own normalization does the budgeting (pass_gain_budget: false)
+        pg = pass_through_gain if c6.get("pass_gain_budget", True) else feature_gain
         for b in c6.get("pass_betas", []):
-            conditions[f"pass_beta_{b}"] = (None, None, pass_through_gain(pass_templates, tk["target"], b), None)
+            conditions[f"pass_beta_{b}"] = (None, None, pg(pass_templates, tk["target"], b), None)
         for b in c6.get("both_betas", []):
             conditions[f"both_beta_{b}"] = (feature_gain(templates, tk["target"], b), None,
-                                           pass_through_gain(pass_templates, tk["target"], b), None)
+                                           pg(pass_templates, tk["target"], b), None)
         conditions["both_wrong_template"] = (feature_gain(templates, c6["wrong_template"], wb), None,
-                                             pass_through_gain(pass_templates, c6["wrong_template"], wb), None)
+                                             pg(pass_templates, c6["wrong_template"], wb), None)
     ex = c6.get("expectation")
     if ex:
         # Phase 7: expectation (predictive subtraction), alone and with attention at beta ex["with_beta"].

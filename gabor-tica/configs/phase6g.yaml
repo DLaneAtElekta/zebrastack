@@ -1,0 +1,41 @@
+# Phase 6g: attention on the rate-coded pass-through stack (Phase 5g). The pass-through
+# now has ON / OFF rates, divisive normalization and Poisson-like noise like the energies,
+# so gain on it works as in the normalization model (no extra budget). Otherwise as 6f
+# (bottom-up templates, energy / pass-through / both gains, strength-matched wrong
+# template), plus the informed readouts of 7c.
+# Calibrate: python experiments/phase6_attention.py --config configs/phase6g.yaml --calibrate-noise 0.3 1 3 10
+# Run:       python experiments/phase6_attention.py --config configs/phase6g.yaml
+base_config: configs/phase5g.yaml
+stack_checkpoint: runs/phase5g/phase5_stages.pt
+
+template_source: bottomup    # control: category-mean V4 features instead of generated templates
+topdown: {n_fit: 2000, kernel: 3, n_iter: 400, lr: 0.02}
+
+task:
+  target: 7                 # sneaker
+  lookalikes: [5, 9]        # sandal, ankle boot: false-alarm test
+  n_per_kind: 600          # 240 in Phase 6; more scenes to cut d' noise
+  n_distractors: 3          # plus the target / lookalike; absent scenes get one more distractor
+  attend_stage: V4
+
+response_noise_T: null          # set by --calibrate-noise: the T whose no-attention AIT d' is closest to 0.5 (rule as 6c)
+
+betas: [0.0, 0.5, 1.0, 2.0]  # 0 = no attention
+wrong_template: 8            # control: attend to "bag" instead (beta 1; both_wrong_template uses wrong_beta)
+pass_betas: [1.0, 2.0]  # gain on V4's pass-through channels only (unit power budget)
+both_betas: [1.0, 2.0]  # gain on the energies and the pass-through together
+wrong_beta: 2.0
+pass_gain_budget: false      # the rate-coded pass-through's normalization does the budgeting
+informed_readout: true       # readouts that have seen lookalikes (7c)
+spatial: false               # the spatial field had no effect in any 6c-6e run
+
+checks:                      # declared before calibrating or running
+  min_template_hits: 8
+  max_noisy_baseline_fraction: 0.8   # the noise must cost information (noisy baseline <= 0.8 x noiseless)
+  # gains are capped by the noiseless ceiling (~0.85 from ~0.5), hence lower bars than Phase 6's 0.3
+  min_dprime_gain: 0.2               # feature gain, best beta vs beta = 0 (retrained readout)
+  feature_min_specificity: 0.1       # ... and by this much more than the wrong-template gain
+  spatial_min_dprime_gain: 0.2       # spatial feature-similarity field, best beta
+  spatial_min_specificity: 0.1
+
+output_dir: runs/phase6g

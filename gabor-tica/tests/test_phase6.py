@@ -112,3 +112,36 @@ def test_pass_through_gain_budget_and_stage_effect():
     f0, f1 = st.features(x), st.features(x, pass_gain=a)
     assert torch.allclose(f1[:, :6], f0[:, :6] * a.view(1, -1, 1, 1), atol=1e-6)
     assert torch.equal(f1[:, 6:], f0[:, 6:])
+
+
+def test_rate_coded_pass_through_normalization_model():
+    """Ground truth for the rate-coded pass-through: without gain it carries the
+    input's sign; a gain on one channel raises that channel's normalized rate and
+    lowers the others' (the shared normalization pool); the noise is
+    Poisson-like (variance grows with the rate)."""
+    import torch
+    from gtv.stages import HigherStage
+
+    torch.manual_seed(0)
+    st = HigherStage("V4", in_channels=4, sheet=4, radius=1, first_budget="all", pass_mode="rate")
+    x = torch.randn(64, 4, 8, 8)
+    f0 = st.features(x)[:, :4]
+    assert f0.shape == (64, 4, 4, 4)
+    pooled = torch.nn.functional.adaptive_avg_pool2d(x, 4)
+    assert torch.corrcoef(torch.stack([f0.flatten(), pooled.flatten()]))[0, 1] > 0.8  # sign and size carried
+    g = torch.ones(4)
+    g[1] = 3.0
+    f1 = st.features(x, pass_gain=g)[:, :4]
+    assert f1[:, 1].abs().mean() > 1.5 * f0[:, 1].abs().mean()  # attended channel up
+    assert (f1[:, [0, 2, 3]].abs().mean() < f0[:, [0, 2, 3]].abs().mean())  # others suppressed via the pool
+    gen = torch.Generator().manual_seed(1)
+    xs = torch.full((400, 4, 8, 8), 0.2)
+    xs[:, 0] = 2.0  # a strong channel (0) and weak ones
+    fn = st.features(xs, noise_T=1.0, generator=gen)[:, :4]
+    assert fn[:, 0].var() > fn[:, 1].var()
+    try:
+        HigherStage("V4", in_channels=4, sheet=4, skip_channels=2, pass_mode="rate")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("rate mode with skips should be refused")
