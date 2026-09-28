@@ -1,7 +1,9 @@
 # Phase 5g: the Phase 5b stack with a rate-coded V4 pass-through (ON / OFF rates with
 # their own divisive normalization; HigherStage(pass_mode='rate')), so attention gain and
 # response noise act on the pass-through as on the energies (Phase 6g). V4 refit; PIT and
-# AIT refit on the new V4 outputs.
+# AIT refit on the new V4 outputs. noise_kind: poisson (true spike counts; the Gaussian
+# approximation leaks information through its variance at small T) only affects runs with
+# response noise, not the (noiseless) fit.
 # Run: python experiments/phase5_hierarchy.py --config configs/phase5g.yaml
 base_config: configs/phase2.yaml
 data:
@@ -18,6 +20,7 @@ stages:
     pass_mode: rate
     pass_norm_sigma: 0.1
     pass_norm_spatial_std: 1.0
+    noise_kind: poisson
   PIT:
     sheet: 14
     radius: 2

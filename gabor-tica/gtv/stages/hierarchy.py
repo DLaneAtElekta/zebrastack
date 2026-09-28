@@ -36,6 +36,7 @@ class HigherStage(Stage):
         pass_mode: str = "linear",
         pass_norm_sigma: float = 0.1,
         pass_norm_spatial_std: float = 1.0,
+        noise_kind: str = "gaussian",
     ):
         """``first_budget``: whitening dimensions for the first-order (+ skip)
         channels, i.e. the pass-through of the stage below. None = half the
@@ -49,7 +50,14 @@ class HigherStage(Stage):
         normalization, so the pass-through gets the same normalization-model
         pathway as the energies: attention gain scales the rates before
         normalization, and the response noise is Poisson-like on the normalized
-        rates. The channel passed up is ON - OFF, pooled."""
+        rates. The channel passed up is ON - OFF, pooled.
+
+        ``noise_kind`` for the response noise on normalized rates R at scale T:
+        "gaussian" (Phases 6c-8): R + sqrt(R / T) * N(0, 1), clamped at 0. Its
+        variance tracks R, so at small T the noise itself carries information
+        about R (the Fisher information does not vanish as T -> 0).
+        "poisson" (Phase 6g): Poisson(R * T) / T, a spike count in a window T;
+        its information about R vanishes as T -> 0."""
         super().__init__(name)
         self.in_channels, self.skip_channels = in_channels, skip_channels
         self.bank = GaborBank(n_orientations, 1, freq)
@@ -60,6 +68,9 @@ class HigherStage(Stage):
         if pass_mode == "rate" and skip_channels:
             raise ValueError("rate-coded pass-through is implemented without skips")
         self.pass_mode = pass_mode
+        if noise_kind not in ("gaussian", "poisson"):
+            raise ValueError(f"unknown noise_kind {noise_kind!r}")
+        self.noise_kind = noise_kind
         self.pass_norm = DivisiveNormalization(pass_norm_sigma, pass_norm_spatial_std)
         self.n_second = in_channels * n_orientations
         self.n_first = in_channels + skip_channels
@@ -111,8 +122,7 @@ class HigherStage(Stage):
             e = e * (gain.view(1, -1, 1, 1) if gain.dim() == 1 else gain)
         r = self.norm(e)
         if noise_T is not None:
-            noise = torch.randn(r.shape, generator=generator)
-            r = (r + torch.sqrt(r.clamp(min=0) / noise_T) * noise).clamp(min=0)
+            r = self._respond(r, noise_T, generator)
         lr_ = self.log(r)
         if expect is not None:
             lr_ = expect(lr_)
@@ -125,8 +135,7 @@ class HigherStage(Stage):
                 drive = drive * pass_gain.repeat(2).view(1, -1, 1, 1)
             r1 = self.pass_norm(drive)
             if noise_T is not None:
-                n1 = torch.randn(r1.shape, generator=generator)
-                r1 = (r1 + torch.sqrt(r1.clamp(min=0) / noise_T) * n1).clamp(min=0)
+                r1 = self._respond(r1, noise_T, generator)
             first = F.adaptive_avg_pool2d(r1[:, :c] - r1[:, c:], (h, w))
             return torch.cat([first, second], 1)
         first = [F.adaptive_avg_pool2d(x, (h, w))]
@@ -139,6 +148,13 @@ class HigherStage(Stage):
             spread = self.tica.whitener.parts[0].scale.view(1, -1, 1, 1)
             first = first + spread / noise_T**0.5 * torch.randn(first.shape, generator=generator)
         return torch.cat([first, second], 1)
+
+    def _respond(self, r: torch.Tensor, T: float, generator: torch.Generator | None) -> torch.Tensor:
+        """Response noise on normalized rates (see ``noise_kind``)."""
+        if self.noise_kind == "poisson":
+            return torch.poisson(r.clamp(min=0) * T, generator=generator) / T
+        noise = torch.randn(r.shape, generator=generator)
+        return (r + torch.sqrt(r.clamp(min=0) / T) * noise).clamp(min=0)
 
     def fit(self, x: torch.Tensor, skips: list[torch.Tensor] | None = None, border: int = 0,
             chunk: int = 256, **tica_kw) -> list[float]:
@@ -189,7 +205,7 @@ def build_stack(stage_cfgs: dict, in_channels: dict[str, int]) -> dict[str, "Hig
     for name, sc in stage_cfgs.items():
         skip = sc.get("skip")
         kw = {"skip_channels": in_channels[skip] if skip else 0, "first_budget": sc.get("first_budget")}
-        for key in ("pass_mode", "pass_norm_sigma", "pass_norm_spatial_std"):
+        for key in ("pass_mode", "pass_norm_sigma", "pass_norm_spatial_std", "noise_kind"):
             if key in sc:
                 kw[key] = sc[key]
         if sc.get("bank") == "mix":

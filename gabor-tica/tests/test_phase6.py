@@ -145,3 +145,32 @@ def test_rate_coded_pass_through_normalization_model():
         pass
     else:
         raise AssertionError("rate mode with skips should be refused")
+
+
+def test_poisson_response_noise_loses_information_as_window_shrinks():
+    """Ground truth: two rates R = 0.5 and 1.0. With true Poisson noise the
+    responses become indistinguishable as T -> 0 (a short window has almost no
+    spikes); with the Gaussian approximation the response variance keeps
+    separating them (the variance tracks R)."""
+    import torch
+    from gtv.stages import HigherStage
+
+    st_g = HigherStage("V4", in_channels=2, sheet=3, radius=1, first_budget="all")
+    st_p = HigherStage("V4", in_channels=2, sheet=3, radius=1, first_budget="all", noise_kind="poisson")
+    r = torch.cat([torch.full((20000,), 0.5), torch.full((20000,), 1.0)])
+    lab = torch.cat([torch.zeros(20000), torch.ones(20000)])
+
+    def sep(resp):  # best single-feature d' using the response and its square
+        out = []
+        for f in (resp, resp.pow(2)):
+            a, b = f[lab == 0], f[lab == 1]
+            out.append(float((b.mean() - a.mean()).abs() / (0.5 * (a.var() + b.var())).sqrt()))
+        return max(out)
+
+    g = torch.Generator().manual_seed(0)
+    assert torch.isclose(st_p._respond(r, 5.0, g).mean(), r.mean(), rtol=0.02)  # unbiased
+    dp_small = sep(st_p._respond(r, 0.01, g))
+    dg_small = sep(st_g._respond(r, 0.01, g))
+    assert dp_small < 0.1  # Poisson: nothing left in a tiny window
+    assert dg_small > 2 * dp_small  # Gaussian approximation still separates them
+    assert sep(st_p._respond(r, 10.0, g)) > 1.0  # a long window separates them
